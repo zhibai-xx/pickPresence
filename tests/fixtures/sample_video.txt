@@ -1,0 +1,3 @@
+Sample PickPresence video placeholder.
+Line 2 for deterministic file size.
+Line 3 ensures >60 bytes to vary heuristics.

@@ -1,0 +1,6 @@
+[
+  {"start": 0.0, "end": 0.5, "embedding": [1,0,0], "track_id": "A", "sources": ["face-det"], "score": 0.9},
+  {"start": 0.5, "end": 1.0, "embedding": [0.02,0.98,0], "track_id": "A", "sources": ["face-det"], "score": 0.8},
+  {"start": 1.0, "end": 1.5, "embedding": [0.01,0.99,0], "track_id": "A", "sources": ["face-det"], "score": 0.8},
+  {"start": 3.0, "end": 3.5, "embedding": [-1,0,0], "track_id": "B", "sources": ["face-det"], "score": 0.3}
+]

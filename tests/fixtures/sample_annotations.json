@@ -1,0 +1,5 @@
+[
+  {"start": 0.0, "end": 1.0, "confidence": 0.8, "sources": ["face-mock"]},
+  {"start": 1.2, "end": 2.4, "confidence": 0.7, "sources": ["tracker-mock"]},
+  {"start": 4.8, "end": 4.9, "confidence": 0.4, "sources": ["noise"]}
+]
