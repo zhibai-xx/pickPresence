@@ -21,6 +21,9 @@ class DetectionEntry:
     bbox: list[float] | None = None
     frame_index: int | None = None
     similarity: float | None = None
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    ref_topk_avg: float | None = None
 
     def duration(self) -> float:
         return max(0.0, self.end - self.start)

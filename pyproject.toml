@@ -12,3 +12,6 @@ dependencies = []
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:Do not expect file_or_dir.*:UserWarning:argparse",
+]

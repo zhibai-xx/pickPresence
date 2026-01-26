@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence
 
 from .detections import DetectionEntry
-from .identity import FaceMatcher
+from .identity import FaceMatcher, MatchDetails
 
 
 @dataclass
@@ -19,6 +19,11 @@ class TrackSelection:
     score: float
     p90_similarity: float
     max_similarity: float
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    best_ref_p90: float | None = None
+    ref_topk_avg: float | None = None
+    ref_hits: list[dict] | None = None
 
 
 class TrackSelector:
@@ -49,13 +54,15 @@ class TrackSelector:
             grouped.setdefault(key, []).append(entry)
         summaries: List[TrackSelection] = []
         for track_id, entries in grouped.items():
-            sims = [self._score(entry) for entry in entries]
+            details = [self._match_details(entry) for entry in entries]
+            sims = [info.score for info in details]
             avg_sim = sum(sims) / len(sims) if sims else 0.0
             p90 = _percentile(sims, 0.9)
             max_sim = max(sims) if sims else 0.0
             score = max(avg_sim, p90, max_sim)
             total_duration = sum(entry.duration() for entry in entries)
             label = self._resolve_label(entries)
+            ref_stats = _summarize_reference_hits(details)
             summaries.append(
                 TrackSelection(
                     track_id=track_id,
@@ -66,6 +73,11 @@ class TrackSelector:
                     score=score,
                     p90_similarity=p90,
                     max_similarity=max_sim,
+                    best_ref_id=ref_stats.best_ref_id,
+                    best_ref_sim=ref_stats.best_ref_sim,
+                    best_ref_p90=ref_stats.best_ref_p90,
+                    ref_topk_avg=ref_stats.ref_topk_avg,
+                    ref_hits=ref_stats.ref_hits,
                 )
             )
         if not summaries:
@@ -86,10 +98,21 @@ class TrackSelector:
         )
         return [best]
 
-    def _score(self, entry: DetectionEntry) -> float:
+    def _match_details(self, entry: DetectionEntry) -> MatchDetails:
         if self.matcher:
-            return self.matcher.similarity(entry.embedding)
-        return entry.base_score
+            info = self.matcher.match_details(entry.embedding)
+            entry.similarity = info.score
+            entry.best_ref_id = info.best_ref_id
+            entry.best_ref_sim = info.best_ref_sim
+            entry.ref_topk_avg = info.topk_avg
+            return info
+        entry.similarity = entry.base_score
+        return MatchDetails(
+            score=entry.base_score,
+            best_ref_id=None,
+            best_ref_sim=None,
+            topk_avg=None,
+        )
 
     def _resolve_label(self, entries: Sequence[DetectionEntry]) -> str | None:
         for entry in entries:
@@ -108,3 +131,38 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
     index = int(round(clamped * (len(sorted_vals) - 1)))
     index = max(0, min(len(sorted_vals) - 1, index))
     return sorted_vals[index]
+
+
+@dataclass
+class _RefStats:
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    best_ref_p90: float | None = None
+    ref_topk_avg: float | None = None
+    ref_hits: list[dict] | None = None
+
+
+def _summarize_reference_hits(details: Sequence[MatchDetails]) -> _RefStats:
+    best_ids = [info.best_ref_id for info in details if info.best_ref_id is not None]
+    best_sims = [info.best_ref_sim for info in details if info.best_ref_sim is not None]
+    topk_avgs = [info.topk_avg for info in details if info.topk_avg is not None]
+    if not best_ids or not best_sims:
+        return _RefStats()
+    counts: dict[str, int] = {}
+    for ref_id in best_ids:
+        counts[ref_id] = counts.get(ref_id, 0) + 1
+    best_ref_id = max(counts.items(), key=lambda item: item[1])[0]
+    hits = [
+        {"ref_id": ref_id, "hits": count}
+        for ref_id, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    best_ref_sim = max(best_sims)
+    best_ref_p90 = _percentile(best_sims, 0.9)
+    ref_topk_avg = sum(topk_avgs) / len(topk_avgs) if topk_avgs else None
+    return _RefStats(
+        best_ref_id=best_ref_id,
+        best_ref_sim=best_ref_sim,
+        best_ref_p90=best_ref_p90,
+        ref_topk_avg=ref_topk_avg,
+        ref_hits=hits,
+    )

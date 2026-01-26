@@ -636,3 +636,43 @@ def test_cli_combines_reference_embeddings(tmp_path):
     subprocess.run(cmd, check=True, env=env)
     data = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
     assert data["summary"]["segment_count"] == 1
+
+
+def test_cli_multi_reference_stats(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    detections = FIXTURES / "detections_target.json"
+    reference = FIXTURES / "reference_target.json"
+    ref_alt = tmp_path / "ref_alt.json"
+    ref_alt.write_text(json.dumps({"name": "Side", "embedding": [0.0, 1.0, 0.0]}), encoding="utf-8")
+    output_dir = tmp_path / "multi_ref"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference),
+        "--reference-embeddings",
+        str(ref_alt),
+        "--reference-agg",
+        "max",
+        "--detection-log",
+        str(detections),
+        "--match-threshold",
+        "0.7",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    data = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    seg = data["segments"][0]
+    assert seg["best_ref_id"] == "SampleTarget"
+    assert seg["best_ref_sim"] >= 0.9
+    track = data["tracks"][0]
+    assert track["best_ref_id"] == "SampleTarget"

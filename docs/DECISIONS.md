@@ -20,3 +20,8 @@
 | D16 | 2026-01-19 | Head/tail trimming is an opt-in final pass that uses the reference matcher (hysteresis thresholds + run length + padding) to cut trailing frames where the target disappears, dropping segments that cannot be confirmed. |
 | D17 | 2026-01-19 | Clip export always subtracts `--export-end-eps` and uses `-t duration` rather than `-to` to avoid ffmpeg’s last-frame drift; timeline records both logical and export ranges. |
 | D18 | 2026-01-19 | Video-based trimming optionally rescans a configurable window via InsightFace to align head/tail boundaries with real frames; when unavailable it falls back to detection timestamps but annotates failures. |
+| D19 | 2026-01-26 | M9 acceptance uses fixture-based synthetic detections and placeholder exports to keep the end-to-end verification deterministic without requiring ffmpeg or external media. |
+| D20 | 2026-01-26 | Audit frame extraction adds ffmpeg `-update 1` and a single retry with size checks to stabilize single-image outputs without altering clip generation. |
+| D21 | 2026-01-26 | Audit sampling offsets from clip end by 0.2s and writes ffmpeg stderr logs per frame to reduce EOF blank frames and aid debugging. |
+| D22 | 2026-01-26 | Multi-reference matching uses per-reference similarity aggregation (default `max`, optional `topk_avg`) while keeping combined template output for detector compatibility. |
+| D23 | 2026-01-26 | `scripts/verify_pytest.py` wraps pytest to suppress the Python 3.12 argparse intermix warning (`Do not expect file_or_dir...`) during verify runs since it originates from upstream parsing internals. |

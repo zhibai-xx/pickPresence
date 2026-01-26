@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -69,15 +70,16 @@ def main() -> int:
             print(f"[audit] Segment {idx:03d}: clip not found at {clip_path}", file=sys.stderr)
             continue
         duration = max(0.0, export_end - export_start)
-        clip_last_time = max(0.0, duration - 0.01)
+        clip_last_time = max(0.0, duration - 0.2)
         clip_last_path = seg_dir / "clip_last.png"
-        _extract_frame_ffmpeg(
+        clip_ok, clip_err = _extract_frame_ffmpeg(
             binary=args.ffmpeg_bin,
             video=clip_path,
             timestamp=clip_last_time,
             output=clip_last_path,
+            stderr_path=seg_dir / "clip_last.stderr",
         )
-        clip_last_sim = analyzer.similarity(clip_last_path)
+        clip_last_sim = _safe_similarity(analyzer, clip_last_path, clip_ok, clip_err, "clip_last")
         status = "PASS" if clip_last_sim is not None and clip_last_sim >= args.keep_threshold else "FAIL"
         print(
             f"[audit] Segment {idx:03d} export_end={export_end:.3f}s "
@@ -91,13 +93,14 @@ def main() -> int:
         for delta, label in offsets:
             ts = max(0.0, min(video_duration, export_end + delta))
             out_path = seg_dir / f"orig_end_{label}.png"
-            _extract_frame_ffmpeg(
+            ok, err = _extract_frame_ffmpeg(
                 binary=args.ffmpeg_bin,
                 video=Path(args.video),
                 timestamp=ts,
                 output=out_path,
+                stderr_path=out_path.with_suffix(".stderr"),
             )
-            sim = analyzer.similarity(out_path)
+            sim = _safe_similarity(analyzer, out_path, ok, err, f"orig_end_{label}")
             print(
                 f"         frame {label} @ {ts:.3f}s similarity={sim if sim is not None else 'NA'}"
             )
@@ -105,20 +108,42 @@ def main() -> int:
     return 0
 
 
-def _extract_frame_ffmpeg(binary: str, video: Path, timestamp: float, output: Path) -> None:
+def _extract_frame_ffmpeg(
+    binary: str,
+    video: Path,
+    timestamp: float,
+    output: Path,
+    retries: int = 1,
+    retry_delay_s: float = 0.15,
+    stderr_path: Path | None = None,
+) -> tuple[bool, str]:
     output.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        binary,
-        "-y",
-        "-ss",
-        f"{max(0.0, timestamp):.3f}",
-        "-i",
-        str(video),
-        "-frames:v",
-        "1",
-        str(output),
-    ]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    attempts = retries + 1
+    last_err = ""
+    for _ in range(attempts):
+        if output.exists():
+            output.unlink()
+        cmd = [
+            binary,
+            "-y",
+            "-ss",
+            f"{max(0.0, timestamp):.3f}",
+            "-i",
+            str(video),
+            "-vframes",
+            "1",
+            "-update",
+            "1",
+            str(output),
+        ]
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        last_err = result.stderr.decode(errors="replace")
+        if stderr_path is not None:
+            stderr_path.write_text(last_err, encoding="utf-8")
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 0:
+            return True, last_err
+        time.sleep(retry_delay_s)
+    return False, last_err
 
 
 def _probe_duration(video: str | Path) -> float:
@@ -172,6 +197,29 @@ class FrameAnalyzer:
         if not sims:
             return None
         return max(sims)
+
+
+def _safe_similarity(
+    analyzer: "FrameAnalyzer",
+    image_path: Path,
+    extracted: bool,
+    stderr: str,
+    label: str,
+) -> float | None:
+    if not extracted:
+        if stderr:
+            stderr = stderr.strip().replace("\n", " ")
+            stderr = (stderr[:200] + "...") if len(stderr) > 200 else stderr
+        print(
+            f"[audit] {label}: extract_failed path={image_path} "
+            f"stderr={stderr if stderr else 'NA'}",
+            file=sys.stderr,
+        )
+        return None
+    if not image_path.exists() or image_path.stat().st_size == 0:
+        print(f"[audit] {label}: extract_failed path={image_path} size=0", file=sys.stderr)
+        return None
+    return analyzer.similarity(image_path)
 
 
 if __name__ == "__main__":

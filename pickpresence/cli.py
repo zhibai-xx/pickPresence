@@ -60,6 +60,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Additional reference embeddings to combine into a template.",
     )
     parser.add_argument(
+        "--reference-dir",
+        help="Directory of reference embedding JSON files to include.",
+    )
+    parser.add_argument(
+        "--reference-list-file",
+        help="Text file containing reference embedding paths (one per line).",
+    )
+    parser.add_argument(
+        "--reference-agg",
+        choices=["max", "topk_avg"],
+        default="max",
+        help="Multi-reference aggregation strategy (default max).",
+    )
+    parser.add_argument(
+        "--reference-topk",
+        type=int,
+        default=3,
+        help="Top-k size for reference aggregation when using topk_avg (default 3).",
+    )
+    parser.add_argument(
         "--target-name",
         default=None,
         help="Human-readable identifier for the desired person.",
@@ -190,7 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     annotations = _load_annotations(args.annotations)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    reference_path = _resolve_reference_path(args, output_dir)
+    reference_path, reference_paths = _resolve_reference_paths(args, output_dir)
 
     detection_log = args.detection_log
     if detection_log is None and args.detector_script:
@@ -203,6 +223,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         annotations=annotations,
         detection_log=detection_log,
         reference_embedding=reference_path,
+        reference_embeddings=reference_paths,
+        reference_agg=args.reference_agg,
+        reference_topk=args.reference_topk,
         min_duration=args.min_duration,
         bridge_gap=args.bridge_gap,
         prefer_ffmpeg=not args.force_placeholder_export,
@@ -248,20 +271,18 @@ def _run_detector_and_get_path(args: argparse.Namespace, reference_path: str | N
     return str(detector_output)
 
 
-def _resolve_reference_path(args: argparse.Namespace, output_dir: Path) -> str | None:
-    paths: list[str] = []
-    if args.reference_embedding:
-        paths.append(args.reference_embedding)
-    if args.reference_embeddings:
-        paths.extend(args.reference_embeddings)
+def _resolve_reference_paths(
+    args: argparse.Namespace, output_dir: Path
+) -> tuple[str | None, list[str]]:
+    paths = _gather_reference_paths(args)
     if not paths:
-        return None
+        return None, []
     if len(paths) == 1:
-        return paths[0]
+        return paths[0], paths
     template = _combine_reference_embeddings(paths, args.target_name)
     out_path = output_dir / "reference_template.json"
     out_path.write_text(json.dumps(template, indent=2), encoding="utf-8")
-    return str(out_path)
+    return str(out_path), paths
 
 
 def _combine_reference_embeddings(paths: Sequence[str], name: str | None) -> dict:
@@ -274,6 +295,33 @@ def _combine_reference_embeddings(paths: Sequence[str], name: str | None) -> dic
             ref_name = data.get("name")
     combined = combine_embeddings(vectors)
     return {"name": ref_name or "template", "embedding": combined}
+
+
+def _gather_reference_paths(args: argparse.Namespace) -> list[str]:
+    paths: list[str] = []
+    if args.reference_embedding:
+        paths.append(args.reference_embedding)
+    if args.reference_embeddings:
+        paths.extend(args.reference_embeddings)
+    if args.reference_dir:
+        ref_dir = Path(args.reference_dir)
+        if ref_dir.is_dir():
+            paths.extend(str(path) for path in sorted(ref_dir.glob("*.json")))
+    if args.reference_list_file:
+        list_path = Path(args.reference_list_file)
+        if list_path.exists():
+            for line in list_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    paths.append(line)
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        dedup.append(path)
+    return dedup
 
 
 if __name__ == "__main__":  # pragma: no cover

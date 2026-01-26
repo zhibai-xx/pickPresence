@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover
 
 from .clustering import TrackSelector, TrackSelection
 from .detections import DetectionEntry, load_detection_log
-from .identity import FaceMatcher, load_reference_embedding
+from .identity import FaceMatcher, load_reference_embedding, load_reference_embeddings
 
 
 @dataclass
@@ -35,6 +35,11 @@ class Segment:
     match_avg: float | None = None
     match_max: float | None = None
     match_p90: float | None = None
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    best_ref_p90: float | None = None
+    ref_topk_avg: float | None = None
+    ref_hits: list[dict] | None = None
     export_start: float | None = None
     export_end: float | None = None
 
@@ -55,6 +60,16 @@ class Segment:
         payload["match_avg"] = round(self.match_avg, 3) if self.match_avg is not None else None
         payload["match_max"] = round(self.match_max, 3) if self.match_max is not None else None
         payload["match_p90"] = round(self.match_p90, 3) if self.match_p90 is not None else None
+        if self.best_ref_id is not None:
+            payload["best_ref_id"] = self.best_ref_id
+        if self.best_ref_sim is not None:
+            payload["best_ref_sim"] = round(self.best_ref_sim, 3)
+        if self.best_ref_p90 is not None:
+            payload["best_ref_p90"] = round(self.best_ref_p90, 3)
+        if self.ref_topk_avg is not None:
+            payload["ref_topk_avg"] = round(self.ref_topk_avg, 3)
+        if self.ref_hits is not None:
+            payload["ref_hits"] = self.ref_hits
         if self.export_start is not None or self.export_end is not None:
             payload["export_start"] = (
                 round(self.export_start, 3) if self.export_start is not None else None
@@ -392,6 +407,11 @@ def apply_trim_policy(
         seg.match_avg = stats.avg
         seg.match_max = stats.max_score
         seg.match_p90 = stats.p90
+        seg.best_ref_id = stats.best_ref_id
+        seg.best_ref_sim = stats.best_ref_sim
+        seg.best_ref_p90 = stats.best_ref_p90
+        seg.ref_topk_avg = stats.ref_topk_avg
+        seg.ref_hits = stats.ref_hits
         if seg.primary_track_id is None:
             seg.primary_track_id = stats.primary_track_id or seg.track_id
         if seg.primary_track_id is None and seg.contrib_track_ids:
@@ -533,11 +553,20 @@ def _compute_match_stats(
         return _MatchStats()
     scores: List[float] = []
     per_track: dict[str, List[float]] = {}
+    best_ref_ids: List[str] = []
+    best_ref_sims: List[float] = []
+    topk_avgs: List[float] = []
     for entry in entries:
         score = _score_entry(entry, matcher)
         scores.append(score)
         key = str(entry.track_id)
         per_track.setdefault(key, []).append(score)
+        if entry.best_ref_id is not None:
+            best_ref_ids.append(entry.best_ref_id)
+        if entry.best_ref_sim is not None:
+            best_ref_sims.append(entry.best_ref_sim)
+        if entry.ref_topk_avg is not None:
+            topk_avgs.append(entry.ref_topk_avg)
     if not scores:
         return _MatchStats()
     avg = sum(scores) / len(scores)
@@ -549,12 +578,27 @@ def _compute_match_stats(
             per_track.items(),
             key=lambda item: (sum(item[1]) / len(item[1]), len(item[1])),
         )[0]
-    return _MatchStats(avg=avg, max_score=max_score, p90=p90, primary_track_id=primary)
+    ref_stats = _summarize_best_refs(best_ref_ids, best_ref_sims, topk_avgs)
+    return _MatchStats(
+        avg=avg,
+        max_score=max_score,
+        p90=p90,
+        primary_track_id=primary,
+        best_ref_id=ref_stats.best_ref_id,
+        best_ref_sim=ref_stats.best_ref_sim,
+        best_ref_p90=ref_stats.best_ref_p90,
+        ref_topk_avg=ref_stats.ref_topk_avg,
+        ref_hits=ref_stats.ref_hits,
+    )
 
 
 def _score_entry(entry: DetectionEntry, matcher: FaceMatcher) -> float:
     if entry.similarity is None:
-        entry.similarity = matcher.similarity(entry.embedding)
+        details = matcher.match_details(entry.embedding)
+        entry.similarity = details.score
+        entry.best_ref_id = details.best_ref_id
+        entry.best_ref_sim = details.best_ref_sim
+        entry.ref_topk_avg = details.topk_avg
     return entry.similarity
 
 
@@ -596,7 +640,7 @@ class VideoTrimScanner:
         if np is None:
             raise RuntimeError("Video-based trimming requires numpy to compute similarities.")
         self.app = _load_insightface_app(model_name, device="cpu")
-        self.reference_vec = np.asarray(matcher.reference.vector, dtype=np.float32)
+        self.matcher = matcher
         self.scan_window = scan_window
         self.scan_step = scan_step
 
@@ -694,8 +738,9 @@ class VideoTrimScanner:
         faces = self.app.get(frame)
         if not faces:
             return None
-        ref = self.reference_vec
-        scores = [float(np.dot(face.normed_embedding, ref)) for face in faces]
+        scores = [
+            self.matcher.match_details(face.normed_embedding).score for face in faces
+        ]
         if not scores:
             return None
         return max(scores)
@@ -803,6 +848,9 @@ def run_pipeline(
     annotations: Sequence[dict] | None = None,
     detection_log: str | Path | None = None,
     reference_embedding: str | Path | None = None,
+    reference_embeddings: Sequence[str | Path] | None = None,
+    reference_agg: str = "max",
+    reference_topk: int = 3,
     min_duration: float = 1.0,
     bridge_gap: float = 0.5,
     prefer_ffmpeg: bool = True,
@@ -830,11 +878,29 @@ def run_pipeline(
         raise ValueError("merge_policy must be 'none' or 'union'")
     detections = load_detection_log(detection_log) if detection_log else None
     matcher = None
+    reference_paths: list[str | Path] = []
     if reference_embedding:
-        reference = load_reference_embedding(reference_embedding)
-        matcher = FaceMatcher(reference, threshold=match_threshold)
-        if target_name is None:
-            target_name = reference.name
+        reference_paths.append(reference_embedding)
+    if reference_embeddings:
+        reference_paths.extend(reference_embeddings)
+    dedup_paths: list[str | Path] = []
+    seen_paths: set[str] = set()
+    for path in reference_paths:
+        key = str(path)
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        dedup_paths.append(path)
+    if dedup_paths:
+        references = load_reference_embeddings(dedup_paths)
+        matcher = FaceMatcher(
+            references,
+            threshold=match_threshold,
+            agg=reference_agg,
+            topk=reference_topk,
+        )
+        if target_name is None and references:
+            target_name = references[0].name
     selected_tracks = None
     if detections:
         selector = TrackSelector(
@@ -964,6 +1030,11 @@ def _summarize_tracks(
                 "p90_similarity": round(selection.p90_similarity, 3) if selection else None,
                 "max_similarity": round(selection.max_similarity, 3) if selection else None,
                 "score": round(selection.score, 3) if selection else None,
+                "best_ref_id": selection.best_ref_id if selection else None,
+                "best_ref_sim": round(selection.best_ref_sim, 3) if selection and selection.best_ref_sim is not None else None,
+                "best_ref_p90": round(selection.best_ref_p90, 3) if selection and selection.best_ref_p90 is not None else None,
+                "ref_topk_avg": round(selection.ref_topk_avg, 3) if selection and selection.ref_topk_avg is not None else None,
+                "ref_hits": selection.ref_hits if selection else None,
                 "total_duration": round(sum(seg.duration() for seg in segs), 3),
                 "segment_count": len(segs),
                 "detection_count": len(selection.entries) if selection else None,
@@ -982,6 +1053,11 @@ def _summarize_tracks(
                 "p90_similarity": round(selection.p90_similarity, 3),
                 "max_similarity": round(selection.max_similarity, 3),
                 "score": round(selection.score, 3),
+                "best_ref_id": selection.best_ref_id,
+                "best_ref_sim": round(selection.best_ref_sim, 3) if selection.best_ref_sim is not None else None,
+                "best_ref_p90": round(selection.best_ref_p90, 3) if selection.best_ref_p90 is not None else None,
+                "ref_topk_avg": round(selection.ref_topk_avg, 3) if selection.ref_topk_avg is not None else None,
+                "ref_hits": selection.ref_hits,
                 "total_duration": round(selection.total_duration, 3),
                 "segment_count": 0,
                 "detection_count": len(selection.entries),
@@ -994,3 +1070,44 @@ class _MatchStats:
     max_score: float | None = None
     p90: float | None = None
     primary_track_id: str | None = None
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    best_ref_p90: float | None = None
+    ref_topk_avg: float | None = None
+    ref_hits: list[dict] | None = None
+
+
+@dataclass
+class _RefSummary:
+    best_ref_id: str | None = None
+    best_ref_sim: float | None = None
+    best_ref_p90: float | None = None
+    ref_topk_avg: float | None = None
+    ref_hits: list[dict] | None = None
+
+
+def _summarize_best_refs(
+    best_ref_ids: Sequence[str],
+    best_ref_sims: Sequence[float],
+    topk_avgs: Sequence[float],
+) -> _RefSummary:
+    if not best_ref_ids or not best_ref_sims:
+        return _RefSummary()
+    counts: dict[str, int] = {}
+    for ref_id in best_ref_ids:
+        counts[ref_id] = counts.get(ref_id, 0) + 1
+    best_ref_id = max(counts.items(), key=lambda item: item[1])[0]
+    ref_hits = [
+        {"ref_id": ref_id, "hits": count}
+        for ref_id, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    best_ref_sim = max(best_ref_sims)
+    best_ref_p90 = _percentile(best_ref_sims, 0.9)
+    ref_topk_avg = sum(topk_avgs) / len(topk_avgs) if topk_avgs else None
+    return _RefSummary(
+        best_ref_id=best_ref_id,
+        best_ref_sim=best_ref_sim,
+        best_ref_p90=best_ref_p90,
+        ref_topk_avg=ref_topk_avg,
+        ref_hits=ref_hits,
+    )

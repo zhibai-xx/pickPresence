@@ -51,8 +51,16 @@
 - [x] Regression tests validate that multiple tracks covering a continuous shot collapse into a single segment only when union merging is enabled.
 - [x] docs/REPORT.md / `.env.example` capture the new flag, CLI usage, and recommended `PICKPRESENCE_CLI_ARGS` for demos.
 
-## M9 – Clip-boundary stabilization (current)
+## M9 – Clip-boundary stabilization (complete)
 - [x] Head/tail trim policy with hysteresis knobs (`--trim-threshold-start/keep`, `--trim-min-run`, `--trim-pad`, `--trim-source`) plus optional video scanning (window/step) keeps exported windows aligned with the last confirmed target frame.
 - [x] Segments carry `match_avg/match_p90/match_max`, `primary_track_id`, and `contrib_track_ids`; union segments annotate their trimming source (`video-trim` / `det-trim`) and failures.
 - [x] `--export-end-eps` subtracts a configurable safety pad and ffmpeg now uses `-t duration` so clip endings do not overrun. Timeline JSON records `export_start/export_end`.
 - [x] `scripts/audit_segments.py` renders `clip_last.png` plus `orig_end_*` frames and prints similarity PASS/FAIL summaries for reproducible acceptance.
+- [x] docs/REPORT.md documents a clean-output end-to-end acceptance command and machine-readable summary for M9 verification.
+
+## M10 – Multi-reference embeddings (current)
+- [x] FaceMatcher supports multi-reference aggregation (max/top-k avg) and preserves single-reference behavior.
+- [x] CLI accepts multiple reference inputs (embeddings list + optional dir/list file) and passes aggregation knobs into the pipeline.
+- [x] Timeline segments/tracks expose reference-side stats (`best_ref_id`, `best_ref_sim`, `best_ref_p90` or `ref_topk_avg`, `ref_hits`).
+- [x] Tests cover aggregation modes + single-reference regression; `./scripts/verify.sh` remains green.
+- [x] docs/REPORT.md documents M10 acceptance commands (clean fixtures + real video) and recommended CLI args.
