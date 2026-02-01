@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
@@ -39,6 +40,10 @@ def parse_args() -> argparse.Namespace:
         "--model-name",
         default="buffalo_l",
         help="InsightFace model pack name (see insightface model zoo).",
+    )
+    parser.add_argument(
+        "--providers",
+        help="Comma-separated provider list (overrides --device), e.g. CUDAExecutionProvider,CPUExecutionProvider.",
     )
     parser.add_argument(
         "--embedding-gate",
@@ -104,7 +109,8 @@ def main() -> int:
         Path(args.output).write_text(Path(args.mock_detections).read_text(), encoding="utf-8")
         return 0
 
-    app = _load_insightface_app(args.model_name, args.device)
+    providers_override = args.providers or os.environ.get("PICKPRESENCE_PROVIDER_ORDER")
+    app = _load_insightface_app(args.model_name, args.device, providers_override)
 
     reference_name, reference_vec = _load_reference(args.reference)
 
@@ -334,7 +340,7 @@ def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     return float(np.dot(vec_a, vec_b) / denom)
 
 
-def _load_insightface_app(model_name: str, device: str):
+def _load_insightface_app(model_name: str, device: str, providers_override: Optional[str]):
     try:
         from insightface.app import FaceAnalysis
     except ImportError as exc:  # pragma: no cover
@@ -342,18 +348,28 @@ def _load_insightface_app(model_name: str, device: str):
             "InsightFace is not installed. Run scripts/setup_detector.sh to install dependencies."
         ) from exc
 
-    providers = ["CPUExecutionProvider"]
-    ctx_id = -1
-    if device in ("auto", "cuda"):
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        ctx_id = 0
-        if device == "cpu":
-            providers = ["CPUExecutionProvider"]
-            ctx_id = -1
-    elif device == "cpu":
-        providers = ["CPUExecutionProvider"]
-        ctx_id = -1
+    available = None
+    try:  # pragma: no cover - optional dependency
+        import onnxruntime as ort  # type: ignore
 
+        available = ort.get_available_providers()
+    except Exception:
+        available = None
+
+    from pickpresence.provider_utils import resolve_providers
+
+    providers, missing, desired = resolve_providers(device, providers_override, available)
+    if "CUDAExecutionProvider" in missing:
+        print(
+            "[detector] CUDAExecutionProvider unavailable; falling back to CPUExecutionProvider.",
+            flush=True,
+        )
+    if available is not None:
+        print(f"[detector] providers desired={desired} available={available} using={providers}", flush=True)
+    else:
+        print(f"[detector] providers desired={desired} using={providers}", flush=True)
+
+    ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
     app = FaceAnalysis(name=model_name, providers=providers)
     app.prepare(ctx_id=ctx_id)
     return app

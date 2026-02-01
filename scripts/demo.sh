@@ -103,6 +103,18 @@ PY
 )
 fi
 
+if [[ "$*" == *"--chunk-seconds"* ]]; then
+  chunked_mode=1
+fi
+
+chunked_mode=0
+for arg in "${CLI_EXTRA[@]}"; do
+  if [[ "$arg" == "--chunk-seconds" ]]; then
+    chunked_mode=1
+    break
+  fi
+done
+
 if [[ ! -x "$DETECTOR_SCRIPT" ]]; then
   echo "Detector script not executable: $DETECTOR_SCRIPT"
   echo "Make sure to run: chmod +x $DETECTOR_SCRIPT"
@@ -121,17 +133,21 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-echo "[demo] Running detector..."
-detector_cmd=(
-  "$DETECTOR_SCRIPT"
-  --video "$VIDEO_PATH"
-  --output "$DETECTIONS_PATH"
-  --reference "$REFERENCE_EMBED"
-)
-if [[ ${#DETECTOR_EXTRA[@]} -gt 0 ]]; then
-  detector_cmd+=("${DETECTOR_EXTRA[@]}")
+if [[ "$chunked_mode" -eq 0 ]]; then
+  echo "[demo] Running detector..."
+  detector_cmd=(
+    "$DETECTOR_SCRIPT"
+    --video "$VIDEO_PATH"
+    --output "$DETECTIONS_PATH"
+    --reference "$REFERENCE_EMBED"
+  )
+  if [[ ${#DETECTOR_EXTRA[@]} -gt 0 ]]; then
+    detector_cmd+=("${DETECTOR_EXTRA[@]}")
+  fi
+  "${detector_cmd[@]}"
+else
+  echo "[demo] Chunked mode detected; skipping full detector run."
 fi
-"${detector_cmd[@]}"
 
 echo "[demo] Running PickPresence CLI..."
 cli_cmd=(
@@ -141,8 +157,10 @@ cli_cmd=(
   --video "$VIDEO_PATH"
   --output-dir "$OUT_DIR"
   --reference-embedding "$REFERENCE_EMBED"
-  --detection-log "$DETECTIONS_PATH"
 )
+if [[ "$chunked_mode" -eq 0 ]]; then
+  cli_cmd+=(--detection-log "$DETECTIONS_PATH")
+fi
 if [[ ${#CLI_EXTRA[@]} -gt 0 ]]; then
   cli_cmd+=("${CLI_EXTRA[@]}")
 fi

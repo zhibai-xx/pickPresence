@@ -58,9 +58,23 @@
 - [x] `scripts/audit_segments.py` renders `clip_last.png` plus `orig_end_*` frames and prints similarity PASS/FAIL summaries for reproducible acceptance.
 - [x] docs/REPORT.md documents a clean-output end-to-end acceptance command and machine-readable summary for M9 verification.
 
-## M10 – Multi-reference embeddings (current)
+## M10 – Multi-reference embeddings (complete)
 - [x] FaceMatcher supports multi-reference aggregation (max/top-k avg) and preserves single-reference behavior.
 - [x] CLI accepts multiple reference inputs (embeddings list + optional dir/list file) and passes aggregation knobs into the pipeline.
 - [x] Timeline segments/tracks expose reference-side stats (`best_ref_id`, `best_ref_sim`, `best_ref_p90` or `ref_topk_avg`, `ref_hits`).
 - [x] Tests cover aggregation modes + single-reference regression; `./scripts/verify.sh` remains green.
 - [x] docs/REPORT.md documents M10 acceptance commands (clean fixtures + real video) and recommended CLI args.
+
+## M11 – Long-video stabilization (current)
+- [ ] Chunked processing with `--chunk-seconds` creates `out/chunks/segment_*/` with per-chunk detections + timelines.
+- [ ] `--resume/--skip-existing` skips completed chunks and merges the remaining outputs.
+- [ ] Merged output writes `out/timeline.json`, exports clips to `out/clips/`, and segments include `source_chunk`.
+- [ ] Chunk performance stats (elapsed, FPS, skipped counts) are recorded in `out/chunks/summary.json` and summarized in docs/REPORT.md.
+- [ ] Tests cover chunking + resume; `./scripts/verify.sh` remains green.
+
+## M12 – GPU acceleration & provider selection (current)
+- [x] Detector supports explicit provider order (CUDA/CPU) via CLI/env and logs selected providers.
+- [x] CUDA unavailable triggers CPU fallback with explicit log entry.
+- [x] Docs/.env.example include GPU configuration + acceptance commands (provider probe, CPU vs GPU timing).
+- [x] Tests cover provider selection logic; `./scripts/verify.sh` remains green.
+- [ ] GPU vs CPU timing comparison recorded in docs/REPORT.md (≥2x speedup target on 120s chunk).

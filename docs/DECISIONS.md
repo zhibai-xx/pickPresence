@@ -25,3 +25,8 @@
 | D21 | 2026-01-26 | Audit sampling offsets from clip end by 0.2s and writes ffmpeg stderr logs per frame to reduce EOF blank frames and aid debugging. |
 | D22 | 2026-01-26 | Multi-reference matching uses per-reference similarity aggregation (default `max`, optional `topk_avg`) while keeping combined template output for detector compatibility. |
 | D23 | 2026-01-26 | `scripts/verify_pytest.py` wraps pytest to suppress the Python 3.12 argparse intermix warning (`Do not expect file_or_dir...`) during verify runs since it originates from upstream parsing internals. |
+| D24 | 2026-01-26 | Chunked long-video processing writes per-chunk outputs under `out/chunks/segment_*`, prefixes track IDs with chunk IDs on merge, and uses ffmpeg chunk extraction when a full detection log is unavailable. |
+| D25 | 2026-01-26 | Chunk processing logs per-chunk start/end plus write completion, enforces detector output path per chunk, and applies a watchdog timeout (3x chunk duration) to avoid long-video stalls. |
+| D26 | 2026-01-26 | `scripts/demo.sh` bypasses the full detector run when chunking is requested, and chunk detector stdout/stderr are captured per chunk for troubleshooting. |
+| D27 | 2026-01-26 | GPU provider selection is controlled via a comma-separated provider list (CLI `--providers` or `PICKPRESENCE_PROVIDER_ORDER`), with CUDA fallback logging when unavailable. |
+| D28 | 2026-02-01 | Provider probe shows CUDA/TensorRT providers; CUDA runtime libraries are installed, but ONNXRuntime reports no CUDA-capable device and falls back to CPU, blocking GPU speedup validation. |

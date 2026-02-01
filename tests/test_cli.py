@@ -676,3 +676,60 @@ def test_cli_multi_reference_stats(tmp_path):
     assert seg["best_ref_sim"] >= 0.9
     track = data["tracks"][0]
     assert track["best_ref_id"] == "SampleTarget"
+
+
+def test_cli_chunked_processing_with_resume(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference = FIXTURES / "reference_target.json"
+    detections_path = tmp_path / "chunk_detections.json"
+    detections = [
+        {"start": 0.0, "end": 0.5, "embedding": [0.2, 0.4, 0.6], "track_id": "1", "sources": ["face-det"], "score": 0.9},
+        {"start": 0.6, "end": 1.0, "embedding": [0.2, 0.4, 0.6], "track_id": "1", "sources": ["face-det"], "score": 0.9},
+        {"start": 1.2, "end": 1.6, "embedding": [0.2, 0.4, 0.6], "track_id": "2", "sources": ["face-det"], "score": 0.85},
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "chunked"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference),
+        "--detection-log",
+        str(detections_path),
+        "--chunk-seconds",
+        "1.0",
+        "--segment-policy",
+        "per_detection",
+        "--bridge-gap",
+        "0.2",
+        "--min-duration",
+        "0.1",
+        "--match-threshold",
+        "0.7",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    chunk_root = output_dir / "chunks"
+    assert (chunk_root / "segment_000" / "timeline.json").exists()
+    assert (chunk_root / "segment_001" / "timeline.json").exists()
+    assert (output_dir / "timeline.json").exists()
+    merged = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert merged["summary"]["segment_count"] == 2
+    assert all("source_chunk" in seg for seg in merged["segments"])
+    clips_dir = output_dir / "clips"
+    assert (clips_dir / "clip_000.txt").exists()
+    assert (clips_dir / "clip_001.txt").exists()
+
+    resume_cmd = [*cmd, "--resume"]
+    subprocess.run(resume_cmd, check=True, env=env)
+    summary = json.loads((chunk_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["totals"]["skipped"] >= 1
