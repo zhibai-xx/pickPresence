@@ -30,3 +30,6 @@
 | D26 | 2026-01-26 | `scripts/demo.sh` bypasses the full detector run when chunking is requested, and chunk detector stdout/stderr are captured per chunk for troubleshooting. |
 | D27 | 2026-01-26 | GPU provider selection is controlled via a comma-separated provider list (CLI `--providers` or `PICKPRESENCE_PROVIDER_ORDER`), with CUDA fallback logging when unavailable. |
 | D28 | 2026-02-01 | Provider probe shows CUDA/TensorRT providers; CUDA runtime libraries are installed, but ONNXRuntime reports no CUDA-capable device and falls back to CPU, blocking GPU speedup validation. |
+| D29 | 2026-02-01 | Local dev `.venv` is created with `--system-site-packages` to reuse system `pytest` when pip access is blocked; this keeps `./scripts/verify.sh` runnable without external package downloads. |
+| D30 | 2026-02-01 | InsightFace utilities accept `PICKPRESENCE_INSIGHTFACE_ROOT` / `--model-root` to keep model cache under the repo (avoids permission issues when default `~/.insightface` is not writable). |
+| D31 | 2026-02-02 | CUDA provider requires CUDA 12 runtime libs (cuBLAS/cuRAND/cuFFT/cuDNN); add `/usr/local/cuda-12.9/targets/x86_64-linux/lib` to `LD_LIBRARY_PATH` for successful CUDAExecutionProvider use. |

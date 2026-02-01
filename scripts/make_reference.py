@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,10 @@ def parse_args() -> argparse.Namespace:
         "--model-name",
         default="buffalo_l",
         help="InsightFace model name when using --backend insightface.",
+    )
+    parser.add_argument(
+        "--model-root",
+        help="InsightFace model cache root (defaults to ~/.insightface or PICKPRESENCE_INSIGHTFACE_ROOT).",
     )
     return parser.parse_args()
 
@@ -177,7 +182,11 @@ def _insightface_embedding(frame: np.ndarray, args: argparse.Namespace) -> np.nd
     elif args.device == "cuda":
         ctx_id = 0
 
-    app = FaceAnalysis(name=args.model_name, providers=providers)
+    model_root = args.model_root or os.environ.get("PICKPRESENCE_INSIGHTFACE_ROOT")
+    if model_root:
+        app = FaceAnalysis(name=args.model_name, providers=providers, root=model_root)
+    else:
+        app = FaceAnalysis(name=args.model_name, providers=providers)
     app.prepare(ctx_id=ctx_id)
     faces = app.get(frame)
     if not faces:

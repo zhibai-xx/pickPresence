@@ -13,7 +13,7 @@
 
 ## Verification
 - Command: `./scripts/verify.sh`
-- Result: Pass (provider selection tests included)
+- Result: Pass (pytest from system site-packages venv)
 
 ## End-to-End Acceptance (Clean Output Dir)
 Run this from the repo root to validate M12 provider selection logic via unit tests:
@@ -44,12 +44,12 @@ PYTHONPATH=/home/zhibai/PickPresence /home/zhibai/PickPresence/.venv-detector/bi
 Expected: CUDA provider logs are preferred when available; otherwise logs include fallback to CPU.
 
 ## Performance Notes (M12)
-- Provider probe (2026-02-01): `['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`.
-- Timing run (120s chunk, `--sample-fps 2.0 --max-frames 60`):
-  - GPU run: 6.476s
-  - CPU run: 6.810s
-  - Speedup: 1.05x (target ≥2x not met)
-- CUDA runtime libraries are now present, but ONNXRuntime reports `no CUDA-capable device is detected` and falls back to CPU; GPU speedup validation remains blocked until device visibility is resolved.
+- Provider probe (2026-02-02): `['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`.
+- Timing run (2026-02-02, 180s video, `--sample-fps 1.0`):
+  - GPU run (CUDAExecutionProvider active): 22.77s
+  - CPU-only run: 103.98s
+  - Speedup: ~4.57x (target ≥2x met)
+- CUDA runtime stack installed (CUDA 12.9 + cuBLAS/cuRAND/cuFFT/cuDNN). Ensure `LD_LIBRARY_PATH` includes `/usr/local/cuda-12.9/targets/x86_64-linux/lib` for CLI runs.
 
 ## Pressure Acceptance (M11)
 Use the same episode video + references to validate expansion + trimming recovery (with chunking enabled):
@@ -148,6 +148,7 @@ PYTHONPATH=/home/zhibai/PickPresence /home/zhibai/PickPresence/.venv-detector/bi
    (or `--video /path/video.mp4 --time 12.5`). Use `--backend toy --assume-face` only for tests.
 4. **Detector models** – InsightFace automatically fetches SCRFD/ArcFace assets; keep them outside the repo (typically `~/.insightface`).
 5. **Input video** – Provide an MP4/AVI clip; detector samples at 5 FPS by default. Use `PICKPRESENCE_DETECTOR_ARGS="--dump-frames 10 --dump-dir dump"` (or CLI flags) to inspect bounding boxes and similarities.
+6. **Repo venv** – If pip access is blocked, create `.venv` with `python3 -m venv --system-site-packages .venv` so system `python3-pytest` can satisfy `./scripts/verify.sh`.
 
 ## Demo Workflow
 - Usage: `scripts/demo.sh /path/to/video.mp4 [/path/to/reference.json]`
@@ -177,3 +178,22 @@ PYTHONPATH=/home/zhibai/PickPresence /home/zhibai/PickPresence/.venv-detector/bi
 - Integrate ByteTrack/BoT-SORT or other dedicated trackers for longer-term stability and automatic drifting detection.
 - Add scripts to capture reference embeddings directly from the target video (auto-cropping best face snapshots).
 - Collect anonymized regression fixtures to automatically verify dump-frame outputs / ID drift once licensing allows sharing sample media.
+
+## M12 Postmortem (CUDA Enablement)
+### What Went Wrong
+- Provider list showed CUDA/TensorRT, but ONNXRuntime initially fell back to CPU because the venv had CPU-only `onnxruntime`.
+- After switching to `onnxruntime-gpu`, CUDA provider failed to load due to missing runtime libs in sequence: `libcublasLt.so.12`, `libcurand.so.10`, `libcufft.so.11`, `libcudart.so.12`, then `libcudnn.so.9`.
+- CUDA repo was pointed at `ubuntu2404` on a `ubuntu2204` system; apt refused due to missing GPG key.
+- InsightFace model cache defaulted to `~/.insightface`, which was not writable in some runs.
+- Codex sandbox could not access GPU devices even after CUDA was installed; GPU timing had to be run in the WSL terminal.
+
+### Fixes Applied
+- Added `PICKPRESENCE_INSIGHTFACE_ROOT` / `--model-root` to keep model cache under the repo.
+- Installed CUDA keyring and switched CUDA apt source to `ubuntu2204`, importing the NVIDIA public key.
+- Installed CUDA 12.9 runtime libs: cuBLAS, cuRAND, cuFFT, CUDA runtime, cuDNN.
+- Ensured `LD_LIBRARY_PATH` includes `/usr/local/cuda-12.9/targets/x86_64-linux/lib`.
+- Verified CUDA EP via `onnxruntime` session creation in WSL, then re-ran GPU timing there.
+
+### Outcome
+- GPU timing (180s video, 1 FPS) improved from CPU 103.98s to GPU 22.77s (~4.57x).
+- M12 acceptance now met; remaining GPU runs should be done in WSL terminal when required.

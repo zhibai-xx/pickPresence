@@ -77,4 +77,4 @@
 - [x] CUDA unavailable triggers CPU fallback with explicit log entry.
 - [x] Docs/.env.example include GPU configuration + acceptance commands (provider probe, CPU vs GPU timing).
 - [x] Tests cover provider selection logic; `./scripts/verify.sh` remains green.
-- [ ] GPU vs CPU timing comparison recorded in docs/REPORT.md (≥2x speedup target on 120s chunk).
+- [x] GPU vs CPU timing comparison recorded in docs/REPORT.md (≥2x speedup target on 120s chunk).

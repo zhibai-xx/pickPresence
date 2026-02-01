@@ -46,6 +46,10 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated provider list (overrides --device), e.g. CUDAExecutionProvider,CPUExecutionProvider.",
     )
     parser.add_argument(
+        "--model-root",
+        help="InsightFace model cache root (defaults to ~/.insightface or PICKPRESENCE_INSIGHTFACE_ROOT).",
+    )
+    parser.add_argument(
         "--embedding-gate",
         type=float,
         default=0.65,
@@ -110,7 +114,8 @@ def main() -> int:
         return 0
 
     providers_override = args.providers or os.environ.get("PICKPRESENCE_PROVIDER_ORDER")
-    app = _load_insightface_app(args.model_name, args.device, providers_override)
+    model_root = args.model_root or os.environ.get("PICKPRESENCE_INSIGHTFACE_ROOT")
+    app = _load_insightface_app(args.model_name, args.device, providers_override, model_root)
 
     reference_name, reference_vec = _load_reference(args.reference)
 
@@ -340,7 +345,12 @@ def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     return float(np.dot(vec_a, vec_b) / denom)
 
 
-def _load_insightface_app(model_name: str, device: str, providers_override: Optional[str]):
+def _load_insightface_app(
+    model_name: str,
+    device: str,
+    providers_override: Optional[str] = None,
+    model_root: Optional[str] = None,
+):
     try:
         from insightface.app import FaceAnalysis
     except ImportError as exc:  # pragma: no cover
@@ -370,7 +380,10 @@ def _load_insightface_app(model_name: str, device: str, providers_override: Opti
         print(f"[detector] providers desired={desired} using={providers}", flush=True)
 
     ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
-    app = FaceAnalysis(name=model_name, providers=providers)
+    if model_root:
+        app = FaceAnalysis(name=model_name, providers=providers, root=model_root)
+    else:
+        app = FaceAnalysis(name=model_name, providers=providers)
     app.prepare(ctx_id=ctx_id)
     return app
 
