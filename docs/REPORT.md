@@ -197,3 +197,196 @@ PYTHONPATH=/home/zhibai/PickPresence /home/zhibai/PickPresence/.venv-detector/bi
 ### Outcome
 - GPU timing (180s video, 1 FPS) improved from CPU 103.98s to GPU 22.77s (~4.57x).
 - M12 acceptance now met; remaining GPU runs should be done in WSL terminal when required.
+
+## M13 In Progress – Side-Profile Recall & Small-Face Suppression
+### Completed
+- Added side-profile thresholds (`--side-threshold-start/keep`) with scale gating.
+- Added small-face suppression (`--small-face-max-scale`) to avoid keeping tiny side profiles.
+- Detection logs now include `frame_size`, enabling scale-aware quality tagging.
+- Timeline segments now include a `quality` payload (dominant scale/lighting + side-profile ratio).
+- New regression test covers side-profile recall and small-face suppression via CLI.
+
+### Acceptance (Current)
+- Command: `./scripts/verify.sh`
+- Expected: All tests pass, including `test_side_profile_recall_and_small_face_suppression`.
+
+### Example Run (M13 knobs)
+```
+PYTHONPATH=/home/zhibai/projects/pickPresence /home/zhibai/projects/pickPresence/.venv-detector/bin/python -m pickpresence.cli \
+  --video /home/zhibai/videos/S01E09_180.mp4 \
+  --output-dir /home/zhibai/projects/pickPresence/out/run_180 \
+  --reference-dir /home/zhibai/projects/pickPresence/out/refs \
+  --reference-agg topk_avg --reference-topk 2 \
+  --detection-log /home/zhibai/projects/pickPresence/out/run_180/detections.json \
+  --segment-policy track_first --track-policy all --min-track-similarity 0.0 \
+  --merge-policy union --trim-policy head_tail --trim-source video \
+  --trim-scan-window 0.6 --trim-scan-step 0.04 --bridge-gap 2.0 --export-end-eps 0.2 \
+  --side-threshold-start 0.5 --side-threshold-keep 0.4 --side-scale-min 0.001 \
+  --small-face-max-scale 0.003 --medium-face-max-scale 0.01 --low-light-score 0.5 \
+  --side-bridge-gap 2.2 --side-profile-ratio-min 0.5 \
+  --side-fill-gap 8.0 --side-fill-ratio-min 0.4
+  --track-fill-gap 8.0
+  --track-fill-min-similarity 0.20
+  # track-fill now spans gaps and merges across tracks --small-face-ratio-max 0.3 \
+  --small-face-max-match 0.45 --small-face-min-side-ratio 0.2 --trim-device cuda
+```
+
+Detector recall tuning (optional):
+```
+PYTHONPATH=/home/zhibai/projects/pickPresence /home/zhibai/projects/pickPresence/.venv-detector/bin/python detectors/insightface_detector.py \
+  --video /home/zhibai/videos/S01E09_180.mp4 \
+  --output /home/zhibai/projects/pickPresence/out/run_180/detections.json \
+  --sample-fps 7.5 --det-threshold 0.4
+```
+
+### Machine-Readable Summary
+- `timeline.json` segments now include:
+  - `quality.scale_counts`
+  - `quality.lighting_counts`
+  - `quality.dominant_scale`
+  - `quality.dominant_lighting`
+  - `quality.side_profile_ratio`
+  - `sources` may include `side-bridge` / `side-fill` when side-profile segments are merged.
+
+
+### M13 Manual Review Diff (S01E09_180)
+- Diff report: `docs/acceptance/S01E09_180_diff_report.json`
+- Summary: `docs/acceptance/S01E09_180_diff_report.md`
+- Based on latest `out/run_180/timeline.json` from `scripts/run_m13_style_180.sh`.
+
+
+### M13 Runtime CPU Controls
+- `scripts/run_m13_style_180.sh` sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS` (default 4, override via env).
+
+- Track-fill prefers adjacent tracks but falls back to similarity-gated detections when no matching track exists.
+
+- Track-fill segments bypass trim and are marked with `track-fill-keep`.
+
+- Track-fill is now applied after trimming (post-trim) to target real gaps.
+
+
+### M13 Segment Inspection Helper
+- Script: `scripts/inspect_segments.sh`
+- Default segments: `docs/acceptance/S01E09_180_problem_segments.json`
+- Output: per-segment clip, detections, and extracted frames with similarity metadata in `report.json`.
+
+- `inspect_segments.sh` now emits `_annotated.png` frames with bbox/track/sim overlays (requires cv2).
+
+- `inspect_segments.py` now dumps all sampled frames by default (max-frames=0).
+- `inspect_segments.sh` sample-fps set to 5.0 for denser inspection.
+
+- `inspect_segments.sh` now outputs only annotated frames (all detections on one image).
+
+
+### M14.1 Reference Expansion & Similarity Diagnostics
+Completed:
+- Added `scripts/make_reference_set.py` + `scripts/build_reference_set.sh` to batch-generate reference embeddings and an index.
+- Added `scripts/diagnose_segments.py` + `scripts/diagnose_segments.sh` to summarize similarity + track stability for target gaps.
+- Added fixture `tests/fixtures/sample_face.ppm` and tests for reference set + diagnostics schema.
+
+How to verify (S01E09_180):
+1) Build reference set (from your side/low-light images):
+   `bash scripts/build_reference_set.sh /home/zhibai/projects/pickPresence/out/refs_images /home/zhibai/projects/pickPresence/out/refs YourTarget`
+   Expected: `out/refs/reference_set.json` plus multiple `ref_*.json` files.
+2) Diagnose hard segments:
+   `bash scripts/diagnose_segments.sh /home/zhibai/projects/pickPresence/out/run_180/detections.json docs/acceptance/S01E09_180_problem_segments.json /home/zhibai/projects/pickPresence/out/inspect_segments/diagnostics.json /home/zhibai/projects/pickPresence/out/refs`
+   Expected: `out/inspect_segments/diagnostics.json` with per-segment similarity + track-switch stats.
+
+Known limitations:
+- Reference expansion uses InsightFace (requires detector env). Toy backend is only for tests.
+- Diagnostics rely on detection logs; if detections are sparse, similarity stats may be underrepresented.
+
+Next suggestions:
+- Add side/low-light reference images and re-run diagnostics to confirm similarity shift.
+- If similarity remains <0.2 in key segments, proceed to M14.2 (tracking/person fallback).
+
+
+### M14.2 Track Stability Bridge (Non-Face Fallback)
+Completed:
+- Added `--track-stabilize` with gap + similarity thresholds to reassign fragmented track IDs.
+- Added regression test to validate stabilized track IDs merge segments.
+
+How to verify:
+- Example: `--track-stabilize --track-stabilize-gap 1.0 --track-stabilize-similarity 0.5` on a detection log with fragmented IDs.
+- `./scripts/verify.sh` should pass.
+
+Known limitations:
+- Uses face embeddings for stabilization (not full person ReID).
+- Aggressive thresholds may merge cross-identity tracks if embeddings are noisy.
+
+Next suggestions:
+- If track stability improves but recall is still low, proceed to M14.3 (appearance/ReID fallback).
+
+
+### M14.3 Appearance Fallback (Pluggable)
+Completed:
+- Added lightweight appearance embeddings (color histograms) to detections and reference sets.
+- Added `--appearance-fallback` + `--appearance-threshold` to accept detections when face similarity is low.
+- Added regression test covering appearance fallback.
+
+How to verify:
+1) Regenerate detection log with appearance:
+   `python detectors/insightface_detector.py --video ... --output ...` (appearance now included in detections.json)
+2) Rebuild reference set to include appearance:
+   `bash scripts/build_reference_set.sh <refs_images> <refs_out> Target`
+3) Run pipeline with appearance fallback:
+   `--appearance-fallback --appearance-threshold 0.45`
+
+Known limitations:
+- Appearance histograms are coarse; may confuse similar clothing/lighting.
+- Requires detections with appearance vectors; old logs won’t benefit.
+
+Next suggestions:
+- If still missing hard segments, consider adding true person-ReID or body embeddings.
+
+
+### M15 Lightweight Person ReID Fallback (complete)
+Completed:
+- Add lightweight person embeddings (downsampled body ROI) to detections and reference sets.
+- Add `--person-fallback` + `--person-threshold` to allow person similarity to pass thresholds when face similarity is low.
+- Ensure track-fill + trim policies can use person similarity as a fallback gate.
+- Add track-fill caps (`--track-fill-max-duration`, `--track-fill-max-chain`) to avoid runaway merges.
+- Add face-confirm gating to keep side-bridge/track-fill anchored to real face confirmations.
+Final tuning (accepted):
+- `--track-policy all --min-track-similarity 0.45`
+- `--track-stabilize --track-stabilize-gap 1.0 --track-stabilize-similarity 0.5`
+- `--trim-threshold-start 0.60 --trim-threshold-keep 0.45`
+- `--side-threshold-start 0.45 --side-threshold-keep 0.35`
+- `--track-fill-gap 1.2 --track-fill-min-similarity 0.20 --track-fill-max-duration 2.0 --track-fill-max-chain 2`
+
+How to verify (S01E09_180):
+0) One-shot script:
+   `bash scripts/run_m15_style_180.sh`
+   Notes: uses `--clean-output` by default to remove stale `clip_*` and `timeline.json`.
+   Optional gating: `FACE_CONFIRM_THRESHOLD=0.75 FACE_CONFIRM_WINDOW=2.0`
+1) Rebuild reference set to include person embeddings:
+   `bash scripts/build_reference_set.sh /home/zhibai/projects/pickPresence/out/refs_images /home/zhibai/projects/pickPresence/out/refs YourTarget`
+2) Regenerate detections (includes person embeddings):
+   `PYTHONPATH=/home/zhibai/projects/pickPresence /home/zhibai/projects/pickPresence/.venv-detector/bin/python detectors/insightface_detector.py --video /home/zhibai/videos/S01E09_180.mp4 --output /home/zhibai/projects/pickPresence/out/run_180/detections.json --sample-fps 7.5 --det-threshold 0.35 --providers CUDAExecutionProvider,CPUExecutionProvider --model-root /home/zhibai/projects/pickPresence/out/insightface`
+3) Run pipeline with person fallback:
+   `PYTHONPATH=/home/zhibai/projects/pickPresence /home/zhibai/projects/pickPresence/.venv-detector/bin/python -m pickpresence.cli --video /home/zhibai/videos/S01E09_180.mp4 --output-dir /home/zhibai/projects/pickPresence/out/run_180 --reference-dir /home/zhibai/projects/pickPresence/out/refs --reference-agg topk_avg --reference-topk 2 --detection-log /home/zhibai/projects/pickPresence/out/run_180/detections.json --segment-policy track_first --track-policy all --min-track-similarity 0.0 --min-track-duration 0.0 --merge-policy none --trim-policy head_tail --trim-source video --trim-scan-window 0.6 --trim-scan-step 0.04 --trim-device cuda --bridge-gap 1.4 --min-duration 1.0 --export-end-eps 0.2 --match-threshold 0.75 --side-threshold-start 0.50 --side-threshold-keep 0.40 --side-scale-min 0.001 --small-face-max-scale 0.002 --medium-face-max-scale 0.01 --low-light-score 0.5 --side-bridge-gap 3.0 --side-profile-ratio-min 0.5 --side-fill-gap 8.0 --side-fill-ratio-min 0.4 --track-fill-gap 4.0 --track-fill-min-similarity 0.20 --person-fallback --person-threshold 0.6`
+   Optional caps: `--track-fill-max-duration 2.0 --track-fill-max-chain 2`
+4) Final accepted run (matches manual review with minor acceptable misses):
+   `PYTHONPATH=/home/zhibai/projects/pickPresence /home/zhibai/projects/pickPresence/.venv-detector/bin/python -m pickpresence.cli --video /home/zhibai/videos/S01E09_180.mp4 --output-dir /home/zhibai/projects/pickPresence/out/run_180 --reference-dir /home/zhibai/projects/pickPresence/out/refs --reference-agg topk_avg --reference-topk 2 --detection-log /home/zhibai/projects/pickPresence/out/run_180/detections.json --segment-policy track_first --track-policy all --min-track-similarity 0.45 --track-stabilize --track-stabilize-gap 1.0 --track-stabilize-similarity 0.5 --merge-policy union --trim-policy head_tail --trim-source video --trim-threshold-start 0.60 --trim-threshold-keep 0.45 --trim-scan-window 0.6 --trim-scan-step 0.04 --trim-device cuda --bridge-gap 1.4 --min-duration 1.0 --export-end-eps 0.2 --match-threshold 0.75 --side-threshold-start 0.45 --side-threshold-keep 0.35 --side-scale-min 0.001 --small-face-max-scale 0.002 --medium-face-max-scale 0.01 --low-light-score 0.5 --side-bridge-gap 3.0 --side-profile-ratio-min 0.5 --side-fill-gap 8.0 --side-fill-ratio-min 0.4 --track-fill-gap 1.2 --track-fill-min-similarity 0.20 --track-fill-max-duration 2.0 --track-fill-max-chain 2 --clean-output`
+
+Expected outputs:
+- `out/run_180/timeline.json` updated with person-fallback segments when face similarity is low.
+- Clip count printed on stdout for quick diff against appearance-only runs.
+
+Known limitations:
+- Person embedding is a lightweight downsample; it is not a full ReID model and can confuse similar clothing/backgrounds.
+
+Manual review comparison:
+- Script: `scripts/compare_manual_review.sh`
+- Example: `bash scripts/compare_manual_review.sh docs/acceptance/S01E09_180_manual_review.json out/run_180/timeline.json out/run_180/manual_compare.json out/run_180/manual_compare.md`
+- Baseline timeline: `docs/acceptance/S01E09_180_timeline_baseline.json`
+- Focus segments (84–94, 138–143): `docs/acceptance/S01E09_180_focus_segments.json`
+
+### M16 Identity Consistency Upgrade (planned)
+Goal:
+- Improve recall for hard side/low-light segments without introducing wrong-person clips.
+
+Planned steps:
+1) Formalize face-confirm anchor rules and compare against the M15 baseline timeline.
+2) Evaluate a stronger identity-consistency embedding (ReID/appearance), but keep it optional and audit-only first.
+3) Introduce multi-signal gating once the consistency score proves reliable.

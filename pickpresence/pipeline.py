@@ -19,6 +19,20 @@ except ImportError:  # pragma: no cover
 from .clustering import TrackSelector, TrackSelection
 from .detections import DetectionEntry, load_detection_log
 from .identity import FaceMatcher, load_reference_embedding, load_reference_embeddings
+from .appearance import AppearanceMatcher
+from .reid import PersonMatcher
+
+
+@dataclass
+class MatchPolicy:
+    side_threshold_start: float | None = None
+    side_threshold_keep: float | None = None
+    side_scale_min: float = 0.005
+    small_scale_max: float = 0.003
+    medium_scale_max: float = 0.01
+    low_light_score: float = 0.5
+    appearance_threshold: float | None = None
+    person_threshold: float | None = None
 
 
 @dataclass
@@ -42,6 +56,7 @@ class Segment:
     ref_hits: list[dict] | None = None
     export_start: float | None = None
     export_end: float | None = None
+    quality: dict | None = None
 
     def duration(self) -> float:
         return max(0.0, self.end - self.start)
@@ -70,6 +85,8 @@ class Segment:
             payload["ref_topk_avg"] = round(self.ref_topk_avg, 3)
         if self.ref_hits is not None:
             payload["ref_hits"] = self.ref_hits
+        if self.quality is not None:
+            payload["quality"] = self.quality
         if self.export_start is not None or self.export_end is not None:
             payload["export_start"] = (
                 round(self.export_start, 3) if self.export_start is not None else None
@@ -99,11 +116,26 @@ class TimelineBuilder:
         policy: str = "per_detection",
         match_threshold_start: float | None = None,
         match_threshold_keep: float | None = None,
+        match_policy: MatchPolicy | None = None,
+        track_fill_gap: float = 0.0,
+        track_fill_min_similarity: float = 0.0,
+        track_fill_max_duration: float | None = None,
+        track_fill_max_chain: int | None = None,
+        appearance_matcher: AppearanceMatcher | None = None,
+        person_matcher: PersonMatcher | None = None,
     ) -> None:
         if min_duration <= 0:
             raise ValueError("min_duration must be positive")
         if bridge_gap < 0:
             raise ValueError("bridge_gap must be non-negative")
+        if track_fill_gap < 0:
+            raise ValueError("track_fill_gap must be non-negative")
+        if track_fill_min_similarity < 0 or track_fill_min_similarity > 1.0:
+            raise ValueError("track_fill_min_similarity must be within [0, 1]")
+        if track_fill_max_duration is not None and track_fill_max_duration <= 0:
+            raise ValueError("track_fill_max_duration must be positive")
+        if track_fill_max_chain is not None and track_fill_max_chain < 0:
+            raise ValueError("track_fill_max_chain must be >= 0")
         if policy not in {"per_detection", "track_first", "hysteresis"}:
             raise ValueError("Invalid segment policy")
         self.min_duration = min_duration
@@ -111,6 +143,13 @@ class TimelineBuilder:
         self.policy = policy
         self.match_threshold_start = match_threshold_start
         self.match_threshold_keep = match_threshold_keep
+        self.match_policy = match_policy
+        self.track_fill_gap = track_fill_gap
+        self.track_fill_min_similarity = track_fill_min_similarity
+        self.track_fill_max_duration = track_fill_max_duration
+        self.track_fill_max_chain = track_fill_max_chain
+        self.appearance_matcher = appearance_matcher
+        self.person_matcher = person_matcher
 
     def build(
         self,
@@ -134,6 +173,10 @@ class TimelineBuilder:
                 segments = self._generate_stub_segments(video_path, target_name)
         else:
             segments = self._generate_stub_segments(video_path, target_name)
+        if self.track_fill_gap > 0 and detections:
+            if matcher is None and self.track_fill_min_similarity > 0:
+                raise RuntimeError("track_fill_min_similarity requires reference embeddings.")
+            segments = self._fill_gaps_with_detections(segments, detections, matcher)
         bridged = self._bridge_segments(segments)
         filtered = [seg for seg in bridged if seg.duration() >= self.min_duration]
         return filtered
@@ -183,11 +226,18 @@ class TimelineBuilder:
         matcher: FaceMatcher,
     ) -> List[Segment]:
         segments: List[Segment] = []
+        start_th = self.match_threshold_start or matcher.threshold
         for entry in detections:
             if entry is None or entry.track_id is None:
                 continue
-            score = matcher.similarity(entry.embedding)
-            if score < matcher.threshold and not entry.force_keep:
+            score = _score_entry(entry, matcher)
+            appearance_score = _appearance_score(entry, self.appearance_matcher)
+            person_score = _person_score(entry, self.person_matcher)
+            if _is_small_face(entry, self.match_policy, start_th, score):
+                continue
+            if not _passes_threshold(
+                entry, score, start_th, self.match_policy, "start", appearance_score, person_score
+            ) and not entry.force_keep:
                 continue
             confidence = max(score, entry.base_score)
             sources = [*entry.sources, f"track:{entry.track_id}", "face-match"]
@@ -237,10 +287,26 @@ class TimelineBuilder:
         for entry in detections:
             if entry.track_id is None:
                 continue
-            score = matcher.similarity(entry.embedding)
+            score = _score_entry(entry, matcher)
+            appearance_score = _appearance_score(entry, self.appearance_matcher)
+            person_score = _person_score(entry, self.person_matcher)
             track_id = str(entry.track_id)
-            should_keep = score >= keep_th or entry.force_keep
-            should_start = score >= start_th or entry.force_keep
+            if _is_small_face(entry, self.match_policy, start_th, score):
+                should_keep = False
+                should_start = False
+            else:
+                should_keep = (
+                    _passes_threshold(
+                        entry, score, keep_th, self.match_policy, "keep", appearance_score, person_score
+                    )
+                    or entry.force_keep
+                )
+                should_start = (
+                    _passes_threshold(
+                        entry, score, start_th, self.match_policy, "start", appearance_score, person_score
+                    )
+                    or entry.force_keep
+                )
             if active_track == track_id:
                 if should_keep:
                     segments.append(
@@ -272,16 +338,28 @@ class TimelineBuilder:
 
     def _bridge_segments(self, segments: Sequence[Segment]) -> List[Segment]:
         bridged: List[Segment] = []
+        track_fill_chain = 0
         for seg in segments:
             if not bridged:
                 bridged.append(seg)
                 continue
             prev = bridged[-1]
             gap = seg.start - prev.end
+            track_fill = "track-fill" in prev.sources or "track-fill" in seg.sources
             same_track = (
                 seg.track_id == prev.track_id or seg.track_id is None or prev.track_id is None
             )
-            if gap <= self.bridge_gap and same_track:
+            merge_due_to_fill = gap <= self.bridge_gap and track_fill and not same_track
+            if merge_due_to_fill:
+                if self.track_fill_max_chain is not None and self.track_fill_max_chain >= 0:
+                    if track_fill_chain >= self.track_fill_max_chain:
+                        bridged.append(seg)
+                        track_fill_chain = 0
+                        continue
+                track_fill_chain += 1
+            else:
+                track_fill_chain = 0
+            if gap <= self.bridge_gap and (same_track or track_fill):
                 prev.end = max(prev.end, seg.end)
                 prev.confidence = max(prev.confidence, seg.confidence)
                 prev.sources = list(dict.fromkeys([*prev.sources, *seg.sources]))
@@ -291,6 +369,83 @@ class TimelineBuilder:
             else:
                 bridged.append(seg)
         return bridged
+
+    def _fill_gaps_with_detections(
+        self,
+        segments: Sequence[Segment],
+        detections: Sequence[DetectionEntry],
+        matcher: FaceMatcher | None,
+    ) -> List[Segment]:
+        if not segments:
+            return []
+        ordered = sorted(segments, key=lambda seg: seg.start)
+        dets = sorted(detections, key=lambda det: det.start)
+        filled: List[Segment] = [ordered[0]]
+        for seg in ordered[1:]:
+            prev = filled[-1]
+            gap = seg.start - prev.end
+            if gap > 0 and gap <= self.track_fill_gap:
+                if self.track_fill_max_duration is not None and gap > self.track_fill_max_duration:
+                    filled.append(seg)
+                    continue
+                allowed_tracks = {
+                    str(track_id)
+                    for track_id in (prev.track_id, seg.track_id)
+                    if track_id is not None
+                }
+                primary_candidates: list[DetectionEntry] = []
+                fallback_candidates: list[DetectionEntry] = []
+                for det in dets:
+                    if det.end <= prev.end or det.start >= seg.start:
+                        continue
+                    if allowed_tracks and str(det.track_id) in allowed_tracks:
+                        primary_candidates.append(det)
+                        continue
+                    if matcher and self.track_fill_min_similarity > 0:
+                        score = _score_entry(det, matcher)
+                        if score >= self.track_fill_min_similarity:
+                            fallback_candidates.append(det)
+                            continue
+                        if self.appearance_matcher and det.appearance:
+                            app_score = self.appearance_matcher.similarity(det.appearance)
+                            if app_score >= self.track_fill_min_similarity:
+                                fallback_candidates.append(det)
+                                continue
+                        if self.person_matcher and det.person_embedding:
+                            person_score = self.person_matcher.similarity(det.person_embedding)
+                            if person_score >= self.track_fill_min_similarity:
+                                fallback_candidates.append(det)
+                candidates = primary_candidates or fallback_candidates
+                if candidates:
+                    scores = []
+                    for det in candidates:
+                        face_score = _score_entry(det, matcher) if matcher else det.base_score
+                        app_score = (
+                            self.appearance_matcher.similarity(det.appearance)
+                            if self.appearance_matcher and det.appearance
+                            else 0.0
+                        )
+                        person_score = (
+                            self.person_matcher.similarity(det.person_embedding)
+                            if self.person_matcher and det.person_embedding
+                            else 0.0
+                        )
+                        scores.append(max(face_score, app_score, person_score))
+                    confidence = max(scores) if scores else 0.0
+                    track_ids = sorted({str(det.track_id) for det in candidates})
+                    sources = ["track-fill", *[f"track:{tid}" for tid in track_ids]]
+                    filled.append(
+                        Segment(
+                            start=prev.end,
+                            end=seg.start,
+                            confidence=confidence,
+                            sources=sources,
+                            track_id=None,
+                            contrib_track_ids=track_ids or None,
+                        )
+                    )
+            filled.append(seg)
+        return filled
 
 
 def merge_segments_union(
@@ -369,9 +524,12 @@ def apply_trim_policy(
     segments: Sequence[Segment],
     detections: Sequence[DetectionEntry],
     matcher: FaceMatcher | None,
+    appearance_matcher: AppearanceMatcher | None,
+    person_matcher: PersonMatcher | None,
     policy: str,
     start_threshold: float,
     keep_threshold: float,
+    match_policy: MatchPolicy | None,
     min_run: int,
     pad: float,
     min_duration: float,
@@ -379,7 +537,9 @@ def apply_trim_policy(
     trim_source: str,
     scan_window: float,
     scan_step: float,
+    trim_device: str,
     model_name: str = "buffalo_l",
+    face_confirm_threshold: float = 0.0,
 ) -> List[Segment]:
     if not segments:
         return []
@@ -399,11 +559,17 @@ def apply_trim_policy(
             matcher=matcher,
             scan_window=scan_window,
             scan_step=scan_step,
+            device=trim_device,
             model_name=model_name,
         )
     for seg in segments:
+        if "track-fill" in seg.sources:
+            seg.sources = list(dict.fromkeys([*seg.sources, "track-fill-keep"]))
+            if seg.duration() >= min_duration:
+                trimmed.append(seg)
+            continue
         relevant_entries = _collect_entries_for_segment(seg, detections)
-        stats = _compute_match_stats(relevant_entries, matcher)
+        stats = _compute_match_stats(relevant_entries, matcher, match_policy, start_threshold)
         seg.match_avg = stats.avg
         seg.match_max = stats.max_score
         seg.match_p90 = stats.p90
@@ -412,6 +578,9 @@ def apply_trim_policy(
         seg.best_ref_p90 = stats.best_ref_p90
         seg.ref_topk_avg = stats.ref_topk_avg
         seg.ref_hits = stats.ref_hits
+        seg.quality = stats.quality
+        if face_confirm_threshold > 0 and matcher is not None:
+            _apply_face_confirm(seg, relevant_entries, matcher, face_confirm_threshold)
         if seg.primary_track_id is None:
             seg.primary_track_id = stats.primary_track_id or seg.track_id
         if seg.primary_track_id is None and seg.contrib_track_ids:
@@ -436,10 +605,13 @@ def apply_trim_policy(
                 seg=seg,
                 entries=relevant_entries,
                 matcher=matcher,
+                appearance_matcher=appearance_matcher,
+                person_matcher=person_matcher,
                 start_threshold=start_threshold,
                 keep_threshold=keep_threshold,
                 min_run=min_run,
                 pad=pad,
+                policy=match_policy,
             )
             if bounds:
                 sources_to_add.append("det-trim")
@@ -483,15 +655,36 @@ def _trim_segment_bounds(
     seg: Segment,
     entries: Sequence[DetectionEntry],
     matcher: FaceMatcher,
+    appearance_matcher: AppearanceMatcher | None,
+    person_matcher: PersonMatcher | None,
     start_threshold: float,
     keep_threshold: float,
     min_run: int,
     pad: float,
+    policy: MatchPolicy | None,
 ) -> tuple[float, float] | None:
     if not entries:
         return None
-    start_time = _find_forward_run(entries, matcher, start_threshold, min_run)
-    end_time = _find_backward_run(entries, matcher, keep_threshold, min_run)
+    start_time = _find_forward_run(
+        entries,
+        matcher,
+        start_threshold,
+        min_run,
+        policy,
+        "start",
+        appearance_matcher,
+        person_matcher,
+    )
+    end_time = _find_backward_run(
+        entries,
+        matcher,
+        keep_threshold,
+        min_run,
+        policy,
+        "keep",
+        appearance_matcher,
+        person_matcher,
+    )
     if start_time is None or end_time is None or end_time <= start_time:
         return None
     trimmed_start = max(seg.start, start_time - pad)
@@ -506,12 +699,18 @@ def _find_forward_run(
     matcher: FaceMatcher,
     threshold: float,
     min_run: int,
+    policy: MatchPolicy | None,
+    mode: str,
+    appearance_matcher: AppearanceMatcher | None,
+    person_matcher: PersonMatcher | None,
 ) -> float | None:
     count = 0
     run_start = None
     for entry in entries:
         score = _score_entry(entry, matcher)
-        if score >= threshold:
+        appearance_score = _appearance_score(entry, appearance_matcher)
+        person_score = _person_score(entry, person_matcher)
+        if _passes_threshold(entry, score, threshold, policy, mode, appearance_score, person_score):
             count += 1
             if count == 1:
                 run_start = entry.start
@@ -528,12 +727,18 @@ def _find_backward_run(
     matcher: FaceMatcher,
     threshold: float,
     min_run: int,
+    policy: MatchPolicy | None,
+    mode: str,
+    appearance_matcher: AppearanceMatcher | None,
+    person_matcher: PersonMatcher | None,
 ) -> float | None:
     count = 0
     run_end = None
     for entry in reversed(entries):
         score = _score_entry(entry, matcher)
-        if score >= threshold:
+        appearance_score = _appearance_score(entry, appearance_matcher)
+        person_score = _person_score(entry, person_matcher)
+        if _passes_threshold(entry, score, threshold, policy, mode, appearance_score, person_score):
             count += 1
             if count == 1:
                 run_end = entry.end
@@ -548,6 +753,8 @@ def _find_backward_run(
 def _compute_match_stats(
     entries: Sequence[DetectionEntry],
     matcher: FaceMatcher | None,
+    policy: MatchPolicy | None,
+    start_threshold: float,
 ) -> _MatchStats:
     if matcher is None or not entries:
         return _MatchStats()
@@ -579,6 +786,7 @@ def _compute_match_stats(
             key=lambda item: (sum(item[1]) / len(item[1]), len(item[1])),
         )[0]
     ref_stats = _summarize_best_refs(best_ref_ids, best_ref_sims, topk_avgs)
+    quality = _compute_quality_stats(entries, policy, start_threshold)
     return _MatchStats(
         avg=avg,
         max_score=max_score,
@@ -589,6 +797,7 @@ def _compute_match_stats(
         best_ref_p90=ref_stats.best_ref_p90,
         ref_topk_avg=ref_stats.ref_topk_avg,
         ref_hits=ref_stats.ref_hits,
+        quality=quality,
     )
 
 
@@ -600,6 +809,182 @@ def _score_entry(entry: DetectionEntry, matcher: FaceMatcher) -> float:
         entry.best_ref_sim = details.best_ref_sim
         entry.ref_topk_avg = details.topk_avg
     return entry.similarity
+
+
+def _entry_scale_ratio(entry: DetectionEntry) -> float | None:
+    if entry.bbox is None or entry.frame_size is None:
+        return None
+    if len(entry.bbox) < 4 or len(entry.frame_size) < 2:
+        return None
+    x1, y1, x2, y2 = entry.bbox[:4]
+    w = max(0.0, float(x2) - float(x1))
+    h = max(0.0, float(y2) - float(y1))
+    frame_w = max(1.0, float(entry.frame_size[0]))
+    frame_h = max(1.0, float(entry.frame_size[1]))
+    area = w * h
+    frame_area = frame_w * frame_h
+    if frame_area <= 0:
+        return None
+    return area / frame_area
+
+
+def _entry_quality(entry: DetectionEntry, policy: MatchPolicy | None) -> dict:
+    scale_ratio = _entry_scale_ratio(entry)
+    if policy is None or scale_ratio is None:
+        scale_label = "unknown" if scale_ratio is None else "medium"
+    else:
+        if scale_ratio <= policy.small_scale_max:
+            scale_label = "small"
+        elif scale_ratio <= policy.medium_scale_max:
+            scale_label = "medium"
+        else:
+            scale_label = "large"
+    det_score = entry.base_score
+    if policy is None:
+        lighting = "unknown"
+    else:
+        lighting = "low" if det_score < policy.low_light_score else "normal"
+    payload = {
+        "scale_ratio": round(scale_ratio, 6) if scale_ratio is not None else None,
+        "scale_label": scale_label,
+        "lighting": lighting,
+    }
+    return payload
+
+
+def _passes_threshold(
+    entry: DetectionEntry,
+    score: float,
+    threshold: float,
+    policy: MatchPolicy | None,
+    mode: str,
+    appearance_score: float | None = None,
+    person_score: float | None = None,
+) -> bool:
+    if score >= threshold:
+        return True
+    if (
+        appearance_score is not None
+        and policy is not None
+        and policy.appearance_threshold is not None
+        and appearance_score >= policy.appearance_threshold
+    ):
+        return True
+    if (
+        person_score is not None
+        and policy is not None
+        and policy.person_threshold is not None
+        and person_score >= policy.person_threshold
+    ):
+        return True
+    if policy is None or policy.side_threshold_start is None:
+        return False
+    if mode not in {"start", "keep"}:
+        return False
+    side_th = policy.side_threshold_start
+    if mode == "keep":
+        side_th = (
+            policy.side_threshold_keep
+            if policy.side_threshold_keep is not None
+            else max(0.15, policy.side_threshold_start * 0.6)
+        )
+    scale_ratio = _entry_scale_ratio(entry)
+    if scale_ratio is None or scale_ratio < policy.side_scale_min:
+        return False
+    if scale_ratio <= policy.small_scale_max:
+        return False
+    return score >= side_th
+
+
+def _appearance_score(
+    entry: DetectionEntry, appearance_matcher: AppearanceMatcher | None
+) -> float | None:
+    if appearance_matcher is None or not entry.appearance:
+        return None
+    entry.appearance_similarity = appearance_matcher.similarity(entry.appearance)
+    return entry.appearance_similarity
+
+
+def _person_score(entry: DetectionEntry, person_matcher: PersonMatcher | None) -> float | None:
+    if person_matcher is None or not entry.person_embedding:
+        return None
+    entry.person_similarity = person_matcher.similarity(entry.person_embedding)
+    return entry.person_similarity
+
+
+def _apply_face_confirm(
+    seg: Segment,
+    entries: Sequence[DetectionEntry],
+    matcher: FaceMatcher,
+    threshold: float,
+) -> None:
+    times: list[float] = []
+    for entry in entries:
+        score = _score_entry(entry, matcher)
+        if score >= threshold:
+            times.append(entry.end)
+    if seg.quality is None:
+        seg.quality = {}
+    if not times:
+        seg.quality["face_confirmed"] = False
+        return
+    first = min(times)
+    last = max(times)
+    seg.quality["face_confirmed"] = True
+    seg.quality["face_confirm_first"] = round(first, 3)
+    seg.quality["face_confirm_last"] = round(last, 3)
+    seg.quality["face_confirm_from_start"] = round(max(0.0, first - seg.start), 3)
+    seg.quality["face_confirm_to_end"] = round(max(0.0, seg.end - last), 3)
+
+
+def _is_small_face(entry: DetectionEntry, policy: MatchPolicy | None, threshold: float, score: float) -> bool:
+    if policy is None:
+        return False
+    scale_ratio = _entry_scale_ratio(entry)
+    if scale_ratio is None:
+        return False
+    if score >= threshold:
+        return False
+    return scale_ratio <= policy.small_scale_max
+
+
+def _compute_quality_stats(
+    entries: Sequence[DetectionEntry],
+    policy: MatchPolicy | None,
+    start_threshold: float,
+) -> dict | None:
+    if not entries:
+        return None
+    scale_counts = {"small": 0, "medium": 0, "large": 0, "unknown": 0}
+    lighting_counts = {"low": 0, "normal": 0, "unknown": 0}
+    side_candidates = 0
+    for entry in entries:
+        quality = _entry_quality(entry, policy)
+        scale_label = quality.get("scale_label", "unknown")
+        lighting = quality.get("lighting", "unknown")
+        scale_counts[scale_label] = scale_counts.get(scale_label, 0) + 1
+        lighting_counts[lighting] = lighting_counts.get(lighting, 0) + 1
+        score = entry.similarity if entry.similarity is not None else entry.base_score
+        if policy and policy.side_threshold_start is not None:
+            scale_ratio = _entry_scale_ratio(entry)
+            if (
+                score < start_threshold
+                and scale_ratio is not None
+                and scale_ratio >= policy.side_scale_min
+                and scale_ratio > policy.small_scale_max
+                and score >= policy.side_threshold_start
+            ):
+                side_candidates += 1
+    total = len(entries)
+    dominant_scale = max(scale_counts.items(), key=lambda item: item[1])[0]
+    dominant_lighting = max(lighting_counts.items(), key=lambda item: item[1])[0]
+    return {
+        "scale_counts": scale_counts,
+        "lighting_counts": lighting_counts,
+        "dominant_scale": dominant_scale,
+        "dominant_lighting": dominant_lighting,
+        "side_profile_ratio": round(side_candidates / total, 3) if total else 0.0,
+    }
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float:
@@ -623,6 +1008,7 @@ class VideoTrimScanner:
         matcher: FaceMatcher,
         scan_window: float,
         scan_step: float,
+        device: str = "cpu",
         model_name: str = "buffalo_l",
     ) -> None:
         if scan_window <= 0 or scan_step <= 0:
@@ -639,7 +1025,7 @@ class VideoTrimScanner:
             raise RuntimeError(f"Unable to open video for trimming: {video_path}")
         if np is None:
             raise RuntimeError("Video-based trimming requires numpy to compute similarities.")
-        self.app = _load_insightface_app(model_name, device="cpu")
+        self.app = _load_insightface_app(model_name, device=device)
         self.matcher = matcher
         self.scan_window = scan_window
         self.scan_step = scan_step
@@ -854,9 +1240,16 @@ def run_pipeline(
     min_duration: float = 1.0,
     bridge_gap: float = 0.5,
     prefer_ffmpeg: bool = True,
+    clean_output: bool = False,
     match_threshold: float = 0.8,
     match_threshold_start: float | None = None,
     match_threshold_keep: float | None = None,
+    side_threshold_start: float | None = None,
+    side_threshold_keep: float | None = None,
+    side_scale_min: float = 0.005,
+    small_scale_max: float = 0.003,
+    medium_scale_max: float = 0.01,
+    low_light_score: float = 0.5,
     segment_policy: str = "per_detection",
     track_policy: str = "best",
     min_track_duration: float = 0.5,
@@ -871,6 +1264,27 @@ def run_pipeline(
     trim_source: str = "detections",
     trim_scan_window: float = 0.6,
     trim_scan_step: float = 0.04,
+    trim_device: str = "cpu",
+    face_confirm_threshold: float = 0.0,
+    face_confirm_window: float = 0.0,
+    side_bridge_gap: float = 0.0,
+    side_profile_ratio_min: float = 0.5,
+    side_fill_gap: float = 0.0,
+    side_fill_ratio_min: float = 0.5,
+    track_stabilize: bool = False,
+    track_stabilize_gap: float = 1.5,
+    track_stabilize_similarity: float = 0.6,
+    appearance_fallback: bool = False,
+    appearance_threshold: float | None = None,
+    person_fallback: bool = False,
+    person_threshold: float | None = None,
+    track_fill_gap: float = 0.0,
+    track_fill_min_similarity: float = 0.0,
+    track_fill_max_duration: float | None = None,
+    track_fill_max_chain: int | None = None,
+    small_face_ratio_max: float = 0.0,
+    small_face_max_match: float = 0.0,
+    small_face_min_side_ratio: float = 0.0,
 ) -> TimelineArtifacts:
     """High-level helper tying together timeline + export."""
 
@@ -891,6 +1305,8 @@ def run_pipeline(
             continue
         seen_paths.add(key)
         dedup_paths.append(path)
+    appearance_matcher = None
+    person_matcher = None
     if dedup_paths:
         references = load_reference_embeddings(dedup_paths)
         matcher = FaceMatcher(
@@ -901,8 +1317,38 @@ def run_pipeline(
         )
         if target_name is None and references:
             target_name = references[0].name
+        if appearance_fallback:
+            appearance_vectors: list[list[float]] = []
+            for path in dedup_paths:
+                try:
+                    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                vec = payload.get("appearance")
+                if isinstance(vec, list) and vec:
+                    appearance_vectors.append([float(v) for v in vec])
+            if appearance_vectors:
+                appearance_matcher = AppearanceMatcher(appearance_vectors)
+        if person_fallback:
+            person_vectors: list[list[float]] = []
+            for path in dedup_paths:
+                try:
+                    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                vec = payload.get("person_embedding")
+                if isinstance(vec, list) and vec:
+                    person_vectors.append([float(v) for v in vec])
+            if person_vectors:
+                person_matcher = PersonMatcher(person_vectors)
     selected_tracks = None
     if detections:
+        if track_stabilize:
+            detections = stabilize_detection_tracks(
+                detections,
+                similarity_threshold=track_stabilize_similarity,
+                max_gap=track_stabilize_gap,
+            )
         selector = TrackSelector(
             matcher=matcher,
             policy=track_policy,
@@ -917,12 +1363,29 @@ def run_pipeline(
             target_name = selected_tracks[0].label or f"track_{selected_tracks[0].track_id}"
 
     start_th = match_threshold_start or match_threshold
+    match_policy = MatchPolicy(
+        side_threshold_start=side_threshold_start,
+        side_threshold_keep=side_threshold_keep,
+        side_scale_min=side_scale_min,
+        small_scale_max=small_scale_max,
+        medium_scale_max=medium_scale_max,
+        low_light_score=low_light_score,
+        appearance_threshold=appearance_threshold if appearance_fallback else None,
+        person_threshold=person_threshold if person_fallback else None,
+    )
     builder = TimelineBuilder(
         min_duration=min_duration,
         bridge_gap=bridge_gap,
         policy=segment_policy,
         match_threshold_start=start_th,
         match_threshold_keep=match_threshold_keep,
+        match_policy=match_policy,
+        track_fill_gap=0.0,
+        track_fill_min_similarity=0.0,
+        track_fill_max_duration=None,
+        track_fill_max_chain=None,
+        appearance_matcher=appearance_matcher,
+        person_matcher=person_matcher,
     )
     segments = builder.build(
         video_path=video_path,
@@ -948,9 +1411,12 @@ def run_pipeline(
         segments=segments,
         detections=detections or [],
         matcher=matcher,
+        appearance_matcher=appearance_matcher,
+        person_matcher=person_matcher,
         policy=trim_policy,
         start_threshold=trim_start,
         keep_threshold=keep_default,
+        match_policy=match_policy,
         min_run=max(1, trim_min_run),
         pad=max(0.0, trim_pad),
         min_duration=min_duration,
@@ -958,13 +1424,52 @@ def run_pipeline(
         trim_source=trim_source,
         scan_window=max(0.0, trim_scan_window),
         scan_step=max(0.01, trim_scan_step),
+        trim_device=trim_device,
         model_name="buffalo_l",
+        face_confirm_threshold=face_confirm_threshold,
+    )
+    if track_fill_gap > 0 and detections:
+        if matcher is None and track_fill_min_similarity > 0:
+            raise RuntimeError("track_fill_min_similarity requires reference embeddings.")
+        segments = _apply_track_fill_after_trim(
+            segments=segments,
+            detections=detections,
+            matcher=matcher,
+            appearance_matcher=appearance_matcher,
+            person_matcher=person_matcher,
+            bridge_gap=bridge_gap,
+            track_fill_gap=track_fill_gap,
+            track_fill_min_similarity=track_fill_min_similarity,
+            track_fill_max_duration=track_fill_max_duration,
+            track_fill_max_chain=track_fill_max_chain,
+            face_confirm_window=face_confirm_window,
+            min_duration=min_duration,
+        )
+    segments = filter_small_face_segments(
+        segments=segments,
+        small_face_ratio_max=small_face_ratio_max,
+        small_face_max_match=small_face_max_match,
+        small_face_min_side_ratio=small_face_min_side_ratio,
+    )
+    segments = merge_side_profile_segments(
+        segments=segments,
+        side_bridge_gap=side_bridge_gap,
+        side_profile_ratio_min=side_profile_ratio_min,
+        side_fill_gap=side_fill_gap,
+        side_fill_ratio_min=side_fill_ratio_min,
+        face_confirm_window=face_confirm_window,
     )
     segments = apply_export_padding(segments, export_end_eps)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     timeline_path = out_dir / "timeline.json"
+    if clean_output:
+        for clip in out_dir.glob("clip_*"):
+            if clip.is_file():
+                clip.unlink()
+        if timeline_path.exists():
+            timeline_path.unlink()
     summary = _summarize_timeline(segments)
     track_summaries = _summarize_tracks(selected_tracks, segments)
     _write_timeline(timeline_path, video_path, target_name, segments, summary, track_summaries)
@@ -984,6 +1489,299 @@ def apply_export_padding(segments: Sequence[Segment], export_end_eps: float) -> 
         else:
             seg.export_end = seg.end
     return list(segments)
+
+
+def _apply_track_fill_after_trim(
+    segments: Sequence[Segment],
+    detections: Sequence[DetectionEntry],
+    matcher: FaceMatcher | None,
+    appearance_matcher: AppearanceMatcher | None,
+    person_matcher: PersonMatcher | None,
+    bridge_gap: float,
+    track_fill_gap: float,
+    track_fill_min_similarity: float,
+    track_fill_max_duration: float | None,
+    track_fill_max_chain: int | None,
+    face_confirm_window: float,
+    min_duration: float,
+) -> List[Segment]:
+    if not segments or track_fill_gap <= 0:
+        return list(segments)
+    ordered = sorted(segments, key=lambda seg: seg.start)
+    dets = sorted(detections, key=lambda det: det.start)
+    filled: List[Segment] = [ordered[0]]
+    for seg in ordered[1:]:
+        prev = filled[-1]
+        gap = seg.start - prev.end
+        if gap > 0 and gap <= track_fill_gap:
+            if face_confirm_window > 0:
+                prev_q = prev.quality or {}
+                seg_q = seg.quality or {}
+                prev_ok = prev_q.get("face_confirmed") and (
+                    prev_q.get("face_confirm_to_end", 1e9) <= face_confirm_window
+                )
+                seg_ok = seg_q.get("face_confirmed") and (
+                    seg_q.get("face_confirm_from_start", 1e9) <= face_confirm_window
+                )
+                if not (prev_ok and seg_ok):
+                    filled.append(seg)
+                    continue
+            if track_fill_max_duration is not None and gap > track_fill_max_duration:
+                filled.append(seg)
+                continue
+            allowed_tracks = {
+                str(track_id)
+                for track_id in (prev.track_id, seg.track_id)
+                if track_id is not None
+            }
+            primary_candidates: list[DetectionEntry] = []
+            fallback_candidates: list[DetectionEntry] = []
+            for det in dets:
+                if det.end <= prev.end or det.start >= seg.start:
+                    continue
+                if allowed_tracks and str(det.track_id) in allowed_tracks:
+                    primary_candidates.append(det)
+                    continue
+                if track_fill_min_similarity > 0:
+                    score = _score_entry(det, matcher) if matcher else det.base_score
+                    if score >= track_fill_min_similarity:
+                        fallback_candidates.append(det)
+                        continue
+                    if appearance_matcher and det.appearance:
+                        app_score = appearance_matcher.similarity(det.appearance)
+                        if app_score >= track_fill_min_similarity:
+                            fallback_candidates.append(det)
+                            continue
+                    if person_matcher and det.person_embedding:
+                        person_score = person_matcher.similarity(det.person_embedding)
+                        if person_score >= track_fill_min_similarity:
+                            fallback_candidates.append(det)
+            candidates = primary_candidates or fallback_candidates
+            if candidates:
+                scores = []
+                for det in candidates:
+                    face_score = _score_entry(det, matcher) if matcher else det.base_score
+                    app_score = (
+                        appearance_matcher.similarity(det.appearance)
+                        if appearance_matcher and det.appearance
+                        else 0.0
+                    )
+                    person_score = (
+                        person_matcher.similarity(det.person_embedding)
+                        if person_matcher and det.person_embedding
+                        else 0.0
+                    )
+                    scores.append(max(face_score, app_score, person_score))
+                confidence = max(scores) if scores else 0.0
+                track_ids = sorted({str(det.track_id) for det in candidates})
+                sources = ["track-fill", *[f"track:{tid}" for tid in track_ids]]
+                filled.append(
+                    Segment(
+                        start=prev.end,
+                        end=seg.start,
+                        confidence=confidence,
+                        sources=sources,
+                        track_id=None,
+                        contrib_track_ids=track_ids or None,
+                    )
+                )
+        filled.append(seg)
+    bridged: List[Segment] = []
+    track_fill_chain = 0
+    for seg in filled:
+        if not bridged:
+            bridged.append(seg)
+            continue
+        prev = bridged[-1]
+        gap = seg.start - prev.end
+        track_fill = "track-fill" in prev.sources or "track-fill" in seg.sources
+        same_track = seg.track_id == prev.track_id or seg.track_id is None or prev.track_id is None
+        merge_due_to_fill = gap <= bridge_gap and track_fill and not same_track
+        if merge_due_to_fill:
+            if track_fill_max_chain is not None and track_fill_max_chain >= 0:
+                if track_fill_chain >= track_fill_max_chain:
+                    bridged.append(seg)
+                    track_fill_chain = 0
+                    continue
+            track_fill_chain += 1
+        else:
+            track_fill_chain = 0
+        if gap <= bridge_gap and (same_track or track_fill):
+            prev.end = max(prev.end, seg.end)
+            prev.confidence = max(prev.confidence, seg.confidence)
+            prev.sources = list(dict.fromkeys([*prev.sources, *seg.sources]))
+            prev.contrib_track_ids = _merge_contrib(prev.contrib_track_ids, seg.contrib_track_ids)
+        else:
+            bridged.append(seg)
+    return [seg for seg in bridged if seg.duration() >= min_duration]
+
+
+def stabilize_detection_tracks(
+    detections: Sequence[DetectionEntry],
+    similarity_threshold: float,
+    max_gap: float,
+) -> List[DetectionEntry]:
+    if not detections:
+        return []
+    if similarity_threshold < 0 or similarity_threshold > 1.0:
+        raise ValueError("similarity_threshold must be within [0, 1]")
+    if max_gap < 0:
+        raise ValueError("max_gap must be non-negative")
+
+    ordered = sorted(detections, key=lambda d: d.start)
+
+    tracks: list[dict] = []
+    next_id = 0
+
+    def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(y * y for y in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    stabilized: List[DetectionEntry] = []
+    for det in ordered:
+        best = None
+        best_sim = -1.0
+        for track in tracks:
+            gap = det.start - track["last_time"]
+            if gap < 0 or gap > max_gap:
+                continue
+            sim = _cosine(det.embedding, track["embedding"])
+            if sim > best_sim:
+                best = track
+                best_sim = sim
+        if best is not None and best_sim >= similarity_threshold:
+            det.original_track_id = det.track_id
+            det.track_id = best["id"]
+            det.sources = list(dict.fromkeys([*det.sources, "track-stabilize"]))
+            # update track embedding (running average)
+            count = best["count"] + 1
+            best["embedding"] = [
+                (best["embedding"][i] * best["count"] + det.embedding[i]) / count
+                for i in range(len(det.embedding))
+            ]
+            best["count"] = count
+            best["last_time"] = det.end
+        else:
+            track_id = f"st{next_id}"
+            next_id += 1
+            tracks.append(
+                {
+                    "id": track_id,
+                    "embedding": list(det.embedding),
+                    "count": 1,
+                    "last_time": det.end,
+                }
+            )
+            det.original_track_id = det.track_id
+            det.track_id = track_id
+            det.sources = list(dict.fromkeys([*det.sources, "track-stabilize"]))
+        stabilized.append(det)
+
+    return stabilized
+
+
+def merge_side_profile_segments(
+    segments: Sequence[Segment],
+    side_bridge_gap: float,
+    side_profile_ratio_min: float,
+    side_fill_gap: float,
+    side_fill_ratio_min: float,
+    face_confirm_window: float = 0.0,
+) -> List[Segment]:
+    if not segments:
+        return []
+    if (
+        side_bridge_gap <= 0
+        and side_fill_gap <= 0
+        or (side_profile_ratio_min <= 0 and side_fill_ratio_min <= 0)
+    ):
+        return list(segments)
+    merged: List[Segment] = []
+    for seg in sorted(segments, key=lambda s: s.start):
+        if not merged:
+            merged.append(seg)
+            continue
+        prev = merged[-1]
+        gap = seg.start - prev.end
+        if gap < 0:
+            gap = 0.0
+        prev_ratio = (prev.quality or {}).get("side_profile_ratio", 0.0) if prev.quality else 0.0
+        seg_ratio = (seg.quality or {}).get("side_profile_ratio", 0.0) if seg.quality else 0.0
+        allow_bridge = (
+            gap <= side_bridge_gap
+            and prev_ratio >= side_profile_ratio_min
+            and seg_ratio >= side_profile_ratio_min
+        )
+        allow_fill = (
+            gap <= side_fill_gap
+            and prev_ratio >= side_fill_ratio_min
+            and seg_ratio >= side_fill_ratio_min
+        )
+        if face_confirm_window > 0 and (allow_bridge or allow_fill):
+            prev_confirm = prev.quality or {}
+            seg_confirm = seg.quality or {}
+            prev_ok = prev_confirm.get("face_confirmed") and (
+                prev_confirm.get("face_confirm_to_end", 1e9) <= face_confirm_window
+            )
+            seg_ok = seg_confirm.get("face_confirmed") and (
+                seg_confirm.get("face_confirm_from_start", 1e9) <= face_confirm_window
+            )
+            if not (prev_ok and seg_ok):
+                allow_bridge = False
+                allow_fill = False
+        if allow_bridge or allow_fill:
+            prev.end = max(prev.end, seg.end)
+            prev.export_end = seg.export_end
+            tag = "side-bridge" if allow_bridge else "side-fill"
+            prev.sources = list(dict.fromkeys([*prev.sources, *seg.sources, tag]))
+            prev.contrib_track_ids = _merge_contrib(prev.contrib_track_ids, seg.contrib_track_ids)
+            prev.primary_track_id = prev.primary_track_id or seg.primary_track_id
+            if prev.match_avg is not None and seg.match_avg is not None:
+                prev.match_avg = max(prev.match_avg, seg.match_avg)
+            if prev.match_max is not None and seg.match_max is not None:
+                prev.match_max = max(prev.match_max, seg.match_max)
+            if prev.match_p90 is not None and seg.match_p90 is not None:
+                prev.match_p90 = max(prev.match_p90, seg.match_p90)
+            if prev.quality and seg.quality:
+                for key in ("scale_counts", "lighting_counts"):
+                    if key in prev.quality and key in seg.quality:
+                        merged_counts = prev.quality[key]
+                        for k, v in seg.quality[key].items():
+                            merged_counts[k] = merged_counts.get(k, 0) + v
+                        prev.quality[key] = merged_counts
+                prev.quality["side_profile_ratio"] = max(prev_ratio, seg_ratio)
+            continue
+        merged.append(seg)
+    return merged
+
+
+def filter_small_face_segments(
+    segments: Sequence[Segment],
+    small_face_ratio_max: float,
+    small_face_max_match: float,
+    small_face_min_side_ratio: float,
+) -> List[Segment]:
+    if not segments:
+        return []
+    if small_face_ratio_max <= 0:
+        return list(segments)
+    filtered: List[Segment] = []
+    for seg in segments:
+        quality = seg.quality or {}
+        if quality.get("dominant_scale") == "small":
+            side_ratio = quality.get("side_profile_ratio", 0.0) or 0.0
+            match_avg = seg.match_avg or 0.0
+            if (
+                side_ratio < small_face_min_side_ratio
+                and match_avg < small_face_max_match
+            ):
+                continue
+        filtered.append(seg)
+    return filtered
 
 
 def _flatten_selections(selections: Sequence[TrackSelection]) -> List[DetectionEntry]:
@@ -1075,6 +1873,7 @@ class _MatchStats:
     best_ref_p90: float | None = None
     ref_topk_avg: float | None = None
     ref_hits: list[dict] | None = None
+    quality: dict | None = None
 
 
 @dataclass

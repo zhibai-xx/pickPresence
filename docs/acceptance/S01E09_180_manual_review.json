@@ -1,0 +1,144 @@
+{
+  "video": "/home/zhibai/videos/S01E09_180.mp4",
+  "reviewer_notes": "Manual frame-by-frame review; timestamps may have minor error. Format uses mm.ss.xx where mm is minutes, ss seconds, xx hundredths.",
+  "segments": [
+    {
+      "start": 1.91,
+      "end": 5.03,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 10.31,
+      "end": 25.4,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 28.5,
+      "end": 32.31,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 37.31,
+      "end": 44.91,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 56.71,
+      "end": 68.67,
+      "status": "mismatch",
+      "note": "Far shot, far side face, ~2s far back view. m12 timeline had 56.8-60.8 and 66.8-68.8, missing 60.8-66.8 while side/back view transitions."
+    },
+    {
+      "start": 71.31,
+      "end": 76.07,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 80.0,
+      "end": 84.23,
+      "status": "absent",
+      "note": "Pure back view (likely should be excluded)."
+    },
+    {
+      "start": 84.23,
+      "end": 94.19,
+      "status": "mismatch",
+      "note": "Mid-far side-face start; face front at 1:29.68. m12 timeline had 89.6-94.4, missing early side/low-light seconds."
+    },
+    {
+      "start": 98.79,
+      "end": 109.2,
+      "status": "mismatch",
+      "note": "Mid-far side-face start; face front at 1:43.69. m12 timeline had 105.4-109.4, missing early side/low-light seconds."
+    },
+    {
+      "start": 109.2,
+      "end": 113.95,
+      "status": "note",
+      "note": "Small side-face A/B/C (male lead as composition focus)."
+    },
+    {
+      "start": 113.95,
+      "end": 116.47,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 119.59,
+      "end": 121.63,
+      "status": "note",
+      "note": "Small side-face A."
+    },
+    {
+      "start": 121.63,
+      "end": 123.76,
+      "status": "match",
+      "note": "✅"
+    },
+    {
+      "start": 129.23,
+      "end": 133.27,
+      "status": "note",
+      "note": "Small side-face B."
+    },
+    {
+      "start": 133.27,
+      "end": 135.67,
+      "status": "match",
+      "note": "✅ (m12 timeline 133.2-135.8; starts with small side-face B)."
+    },
+    {
+      "start": 135.67,
+      "end": 135.67,
+      "status": "note",
+      "note": "Small side-face C."
+    },
+    {
+      "start": 138.79,
+      "end": 143.55,
+      "status": "mismatch",
+      "note": "Should exist but missing; far shot throughout."
+    },
+    {
+      "start": 146.15,
+      "end": 152.71,
+      "status": "mismatch",
+      "note": "Should exist but missing; far side-face start, close side-face at 2:30.48."
+    },
+    {
+      "start": 158.47,
+      "end": 162.51,
+      "status": "match",
+      "note": "✅ (female as blurred background)."
+    },
+    {
+      "start": 165.07,
+      "end": 170.68,
+      "status": "match",
+      "note": "✅ (female as blurred background)."
+    },
+    {
+      "start": 174.56,
+      "end": 178.91,
+      "status": "mismatch",
+      "note": "Missing; blurred background becomes clear, mid-far side-face start, includes 1-2s front face, eating (possible recognition impact)."
+    }
+  ],
+  "legend": {
+    "status_values": [
+      "match",
+      "mismatch",
+      "absent",
+      "note"
+    ],
+    "match": "Generated segment matches reviewer expectation.",
+    "mismatch": "Should exist or should be longer; current output misses content.",
+    "absent": "Reviewer marked as should be excluded.",
+    "note": "Context-only marker (e.g., small side-face)."
+  }
+}

@@ -13,6 +13,9 @@ from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from pickpresence.appearance import compute_appearance_vector
+from pickpresence.reid import compute_person_embedding
+
 try:
     import cv2  # type: ignore
 except ImportError as exc:  # pragma: no cover
@@ -29,6 +32,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=5.0,
         help="Frame sampling rate (frames per second).",
+    )
+    parser.add_argument(
+        "--det-threshold",
+        type=float,
+        default=0.5,
+        help="Detection confidence threshold for InsightFace (default 0.5).",
     )
     parser.add_argument(
         "--device",
@@ -123,6 +132,7 @@ def main() -> int:
         video_path=Path(args.video),
         sample_fps=args.sample_fps,
         app=app,
+        det_threshold=args.det_threshold,
         embedding_gate=args.embedding_gate,
         iou_gate=args.iou_gate,
         max_track_gap=args.max_track_gap,
@@ -142,6 +152,7 @@ def run_detector(
     video_path: Path,
     sample_fps: float,
     app,
+    det_threshold: float,
     embedding_gate: float,
     iou_gate: float,
     max_track_gap: float,
@@ -151,6 +162,7 @@ def run_detector(
     dump_frames: int,
     dump_dir: Optional[Path],
 ) -> List[dict]:
+    app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=det_threshold)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Unable to open video: {video_path}")
@@ -195,6 +207,17 @@ def run_detector(
                 similarity = cosine_similarity(embedding, ref_vec)
                 if similarity >= reference_threshold and ref_name:
                     label = ref_name
+            frame_h, frame_w = frame.shape[:2]
+            appearance = None
+            person_embedding = None
+            try:
+                x1, y1, x2, y2 = det.bbox.astype(int).tolist()
+                roi = frame[max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)]
+                appearance = compute_appearance_vector(roi)
+                person_embedding = compute_person_embedding(roi)
+            except Exception:
+                appearance = None
+                person_embedding = None
             entry = {
                 "start": round(start, 3),
                 "end": round(end, 3),
@@ -204,7 +227,10 @@ def run_detector(
                 "score": round(float(det.det_score), 4),
                 "label": label,
                 "bbox": det.bbox.astype(float).round(2).tolist(),
+                "frame_size": [float(frame_w), float(frame_h)],
                 "frame_index": frame_idx,
+                "appearance": appearance,
+                "person_embedding": person_embedding,
             }
             detections.append(entry)
 

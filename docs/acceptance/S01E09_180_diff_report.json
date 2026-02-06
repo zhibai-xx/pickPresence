@@ -1,0 +1,275 @@
+{
+  "video": "/home/zhibai/videos/S01E09_180.mp4",
+  "manual_path": "/home/zhibai/projects/pickPresence/docs/acceptance/S01E09_180_manual_review.json",
+  "timeline_path": "/home/zhibai/projects/pickPresence/out/run_180/timeline.json",
+  "timeline_segment_count": 22,
+  "desired_segment_count": 16,
+  "desired_segments": [
+    {
+      "start": 138.79,
+      "end": 143.55,
+      "status": "mismatch",
+      "note": "Should exist but missing; far shot throughout.",
+      "coverage": 0.0,
+      "gaps": [
+        {
+          "start": 138.79,
+          "end": 143.55
+        }
+      ]
+    },
+    {
+      "start": 146.15,
+      "end": 152.71,
+      "status": "mismatch",
+      "note": "Should exist but missing; far side-face start, close side-face at 2:30.48.",
+      "coverage": 0.3399,
+      "gaps": [
+        {
+          "start": 146.15,
+          "end": 150.48
+        }
+      ]
+    },
+    {
+      "start": 84.23,
+      "end": 94.19,
+      "status": "mismatch",
+      "note": "Mid-far side-face start; face front at 1:29.68. m12 timeline had 89.6-94.4, missing early side/low-light seconds.",
+      "coverage": 0.4448,
+      "gaps": [
+        {
+          "start": 84.23,
+          "end": 89.76
+        }
+      ]
+    },
+    {
+      "start": 10.31,
+      "end": 25.4,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.561,
+      "gaps": [
+        {
+          "start": 10.31,
+          "end": 10.32
+        },
+        {
+          "start": 11.77,
+          "end": 13.36
+        },
+        {
+          "start": 14.65,
+          "end": 19.68
+        }
+      ]
+    },
+    {
+      "start": 56.71,
+      "end": 68.67,
+      "status": "mismatch",
+      "note": "Far shot, far side face, ~2s far back view. m12 timeline had 56.8-60.8 and 66.8-68.8, missing 60.8-66.8 while side/back view transitions.",
+      "coverage": 0.6282,
+      "gaps": [
+        {
+          "start": 56.71,
+          "end": 56.76
+        },
+        {
+          "start": 59.41,
+          "end": 66.24
+        }
+      ]
+    },
+    {
+      "start": 174.56,
+      "end": 178.91,
+      "status": "mismatch",
+      "note": "Missing; blurred background becomes clear, mid-far side-face start, includes 1-2s front face, eating (possible recognition impact).",
+      "coverage": 0.8161,
+      "gaps": [
+        {
+          "start": 174.56,
+          "end": 175.36
+        }
+      ]
+    },
+    {
+      "start": 121.63,
+      "end": 123.76,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9765,
+      "gaps": [
+        {
+          "start": 121.63,
+          "end": 121.68
+        }
+      ]
+    },
+    {
+      "start": 113.95,
+      "end": 116.47,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9802,
+      "gaps": [
+        {
+          "start": 113.95,
+          "end": 114.0
+        }
+      ]
+    },
+    {
+      "start": 71.31,
+      "end": 76.07,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9811,
+      "gaps": [
+        {
+          "start": 71.31,
+          "end": 71.4
+        }
+      ]
+    },
+    {
+      "start": 28.5,
+      "end": 32.31,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9843,
+      "gaps": [
+        {
+          "start": 28.5,
+          "end": 28.56
+        }
+      ]
+    },
+    {
+      "start": 158.47,
+      "end": 162.51,
+      "status": "match",
+      "note": "✅ (female as blurred background).",
+      "coverage": 0.9876,
+      "gaps": [
+        {
+          "start": 158.47,
+          "end": 158.52
+        }
+      ]
+    },
+    {
+      "start": 165.07,
+      "end": 170.68,
+      "status": "match",
+      "note": "✅ (female as blurred background).",
+      "coverage": 0.9911,
+      "gaps": [
+        {
+          "start": 165.07,
+          "end": 165.12
+        }
+      ]
+    },
+    {
+      "start": 1.91,
+      "end": 5.03,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9968,
+      "gaps": [
+        {
+          "start": 1.91,
+          "end": 1.92
+        }
+      ]
+    },
+    {
+      "start": 37.31,
+      "end": 44.91,
+      "status": "match",
+      "note": "✅",
+      "coverage": 0.9987,
+      "gaps": [
+        {
+          "start": 37.31,
+          "end": 37.32
+        }
+      ]
+    },
+    {
+      "start": 98.79,
+      "end": 109.2,
+      "status": "mismatch",
+      "note": "Mid-far side-face start; face front at 1:43.69. m12 timeline had 105.4-109.4, missing early side/low-light seconds.",
+      "coverage": 1.1117,
+      "gaps": [
+        {
+          "start": 98.79,
+          "end": 98.88
+        }
+      ]
+    },
+    {
+      "start": 133.27,
+      "end": 135.67,
+      "status": "match",
+      "note": "✅ (m12 timeline 133.2-135.8; starts with small side-face B).",
+      "coverage": 1.9846,
+      "gaps": []
+    }
+  ],
+  "undesired_segments": [
+    {
+      "start": 130.48,
+      "end": 133.333,
+      "overlap_best": 0.022
+    }
+  ],
+  "duplicate_segments": [
+    {
+      "start": 66.24,
+      "end": 68.773,
+      "dup_of_index": 7
+    },
+    {
+      "start": 133.32,
+      "end": 135.733,
+      "dup_of_index": 15
+    }
+  ],
+  "notes_and_absent": [
+    {
+      "start": 80.0,
+      "end": 84.23,
+      "status": "absent",
+      "note": "Pure back view (likely should be excluded)."
+    },
+    {
+      "start": 109.2,
+      "end": 113.95,
+      "status": "note",
+      "note": "Small side-face A/B/C (male lead as composition focus)."
+    },
+    {
+      "start": 119.59,
+      "end": 121.63,
+      "status": "note",
+      "note": "Small side-face A."
+    },
+    {
+      "start": 129.23,
+      "end": 133.27,
+      "status": "note",
+      "note": "Small side-face B."
+    },
+    {
+      "start": 135.67,
+      "end": 135.67,
+      "status": "note",
+      "note": "Small side-face C."
+    }
+  ]
+}

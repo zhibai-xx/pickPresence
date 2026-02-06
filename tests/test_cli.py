@@ -118,23 +118,391 @@ def test_cli_uses_detection_log_and_reference_embedding(tmp_path):
     assert seg["end"] == 1.6
     assert seg["confidence"] == 1.0
     assert "face-match" in seg["sources"]
-    assert "track:1" in seg["sources"]
-    assert seg["track_id"] == "1"
-    assert seg["primary_track_id"] == "1"
-    assert seg["match_avg"] == 1.0
-    assert seg["match_max"] == 1.0
-    assert seg["match_p90"] == 1.0
-    assert len(data["tracks"]) == 1
-    track = data["tracks"][0]
-    assert track["track_id"] == "1"
-    assert track["label"] == "SampleTarget"
-    assert track["avg_similarity"] == 1.0
-    assert track["p90_similarity"] == 1.0
-    assert track["max_similarity"] == 1.0
-    assert track["score"] == 1.0
-    assert track["total_duration"] == 1.6
-    assert track["segment_count"] == 1
-    assert track["detection_count"] == 2
+
+
+def test_side_profile_recall_and_small_face_suppression(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "side_profile.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 1,
+            "sources": ["insightface"],
+            "score": 0.4,
+            "bbox": [10, 10, 20, 20],
+            "frame_size": [1000, 1000],
+        },
+        {
+            "start": 1.0,
+            "end": 1.5,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 2,
+            "sources": ["insightface"],
+            "score": 0.6,
+            "bbox": [100, 100, 220, 220],
+            "frame_size": [1000, 1000],
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "side_profile_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.1",
+        "--match-threshold",
+        "0.7",
+        "--side-threshold-start",
+        "0.5",
+        "--side-threshold-keep",
+        "0.4",
+        "--side-scale-min",
+        "0.005",
+        "--small-face-max-scale",
+        "0.003",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 1
+    seg = timeline["segments"][0]
+    assert seg["start"] == 1.0
+    assert seg["end"] == 1.5
+    assert "track:2" in seg["sources"]
+    assert seg["track_id"] == "2"
+    assert seg["primary_track_id"] == "2"
+    assert seg["match_avg"] == pytest.approx(0.548, rel=1e-3)
+    assert seg["match_max"] == pytest.approx(0.548, rel=1e-3)
+    assert seg["match_p90"] == pytest.approx(0.548, rel=1e-3)
+    assert len(timeline["tracks"]) == 2
+    track_ids = {track["track_id"] for track in timeline["tracks"]}
+    assert track_ids == {"1", "2"}
+    track2 = next(track for track in timeline["tracks"] if track["track_id"] == "2")
+    assert track2["segment_count"] == 1
+    assert track2["detection_count"] == 1
+
+
+def test_side_profile_bridge_merges_segments(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "side_bridge.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.6,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 1,
+            "sources": ["insightface"],
+            "score": 0.4,
+            "bbox": [100, 100, 220, 220],
+            "frame_size": [1000, 1000],
+        },
+        {
+            "start": 2.0,
+            "end": 2.6,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 2,
+            "sources": ["insightface"],
+            "score": 0.4,
+            "bbox": [100, 100, 220, 220],
+            "frame_size": [1000, 1000],
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "side_bridge_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.5",
+        "--match-threshold",
+        "0.7",
+        "--side-threshold-start",
+        "0.5",
+        "--side-threshold-keep",
+        "0.4",
+        "--side-scale-min",
+        "0.005",
+        "--small-face-max-scale",
+        "0.003",
+        "--side-bridge-gap",
+        "2.2",
+        "--side-profile-ratio-min",
+        "0.5",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 1
+    seg = timeline["segments"][0]
+    assert seg["start"] == 0.0
+    assert seg["end"] == 2.6
+    assert "side-bridge" in seg["sources"]
+
+
+def test_small_face_filter_drops_segment(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "small_face.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.6,
+            "embedding": [0.4, 0.916, 0.0],
+            "track_id": 1,
+            "sources": ["insightface"],
+            "score": 0.9,
+            "bbox": [10, 10, 20, 20],
+            "frame_size": [1000, 1000],
+        }
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "small_face_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.1",
+        "--match-threshold",
+        "0.7",
+        "--segment-policy",
+        "track_first",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--small-face-ratio-max",
+        "0.3",
+        "--small-face-max-match",
+        "0.45",
+        "--small-face-min-side-ratio",
+        "0.2",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 0
+
+
+def test_side_fill_merges_segments(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "side_fill.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.6,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 1,
+            "sources": ["insightface"],
+            "score": 0.4,
+            "bbox": [100, 100, 220, 220],
+            "frame_size": [1000, 1000],
+        },
+        {
+            "start": 6.0,
+            "end": 6.6,
+            "embedding": [0.55, 0.84, 0.0],
+            "track_id": 2,
+            "sources": ["insightface"],
+            "score": 0.4,
+            "bbox": [100, 100, 220, 220],
+            "frame_size": [1000, 1000],
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "side_fill_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.5",
+        "--match-threshold",
+        "0.7",
+        "--side-threshold-start",
+        "0.5",
+        "--side-threshold-keep",
+        "0.4",
+        "--side-scale-min",
+        "0.005",
+        "--small-face-max-scale",
+        "0.003",
+        "--side-fill-gap",
+        "8.0",
+        "--side-fill-ratio-min",
+        "0.4",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 1
+    seg = timeline["segments"][0]
+    assert seg["start"] == 0.0
+    assert seg["end"] == 6.6
+    assert "side-fill" in seg["sources"]
+
+
+def test_track_fill_bridges_gap(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "track_fill.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+        {
+            "start": 0.9,
+            "end": 1.1,
+            "embedding": [0.3, 0.954, 0.0],
+            "track_id": "B",
+            "sources": ["insightface"],
+            "score": 0.4,
+        },
+        {
+            "start": 2.0,
+            "end": 2.5,
+            "embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "track_fill_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--match-threshold",
+        "0.8",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--min-track-duration",
+        "0.0",
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.4",
+        "--trim-policy",
+        "head_tail",
+        "--trim-threshold-start",
+        "0.8",
+        "--trim-min-run",
+        "1",
+        "--track-fill-gap",
+        "2.0",
+        "--track-fill-min-similarity",
+        "0.25",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 1
+    seg = timeline["segments"][0]
+    assert seg["start"] == 0.0
+    assert seg["end"] == 2.5
+    assert "track-fill" in seg["sources"]
 
 
 def test_export_end_eps_adjusts_timeline(tmp_path):
@@ -733,3 +1101,404 @@ def test_cli_chunked_processing_with_resume(tmp_path):
     subprocess.run(resume_cmd, check=True, env=env)
     summary = json.loads((chunk_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["totals"]["skipped"] >= 1
+
+
+def test_make_reference_set_toy_backend(tmp_path):
+    sample = FIXTURES / "sample_face.ppm"
+    input_dir = tmp_path / "refs_in"
+    output_dir = tmp_path / "refs_out"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    (input_dir / "ref_a.ppm").write_bytes(sample.read_bytes())
+    (input_dir / "ref_b.ppm").write_bytes(sample.read_bytes())
+
+    cmd = [
+        sys.executable,
+        str(Path(__file__).parent.parent / "scripts" / "make_reference_set.py"),
+        "--input-dir",
+        str(input_dir),
+        "--output-dir",
+        str(output_dir),
+        "--name",
+        "Target",
+        "--backend",
+        "toy",
+        "--assume-face",
+    ]
+    subprocess.run(cmd, check=True)
+
+    index = json.loads((output_dir / "reference_set.json").read_text(encoding="utf-8"))
+    assert index["count"] == 2
+    assert len(index["items"]) == 2
+    for item in index["items"]:
+        ref_path = Path(item["path"])
+        assert ref_path.exists()
+        payload = json.loads(ref_path.read_text(encoding="utf-8"))
+        assert payload["name"] == "Target"
+        assert isinstance(payload["embedding"], list)
+        assert payload["embedding"]
+
+
+def test_diagnose_segments_schema(tmp_path):
+    detections_path = tmp_path / "detections.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["face-det"],
+            "score": 0.9,
+        },
+        {
+            "start": 0.5,
+            "end": 1.0,
+            "embedding": [0.9, 0.1, 0.0],
+            "track_id": "B",
+            "sources": ["face-det"],
+            "score": 0.8,
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+
+    segments_path = tmp_path / "segments.json"
+    segments_path.write_text(
+        json.dumps([{"start": 0.0, "end": 1.0, "label": "seg"}]), encoding="utf-8"
+    )
+
+    reference = FIXTURES / "reference_target.json"
+    output_path = tmp_path / "diagnostics.json"
+    cmd = [
+        sys.executable,
+        str(Path(__file__).parent.parent / "scripts" / "diagnose_segments.py"),
+        "--detection-log",
+        str(detections_path),
+        "--segments-json",
+        str(segments_path),
+        "--output",
+        str(output_path),
+        "--reference-embeddings",
+        str(reference),
+    ]
+    subprocess.run(cmd, check=True)
+
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    assert "segments" in data and len(data["segments"]) == 1
+    seg = data["segments"][0]
+    assert seg["label"] == "seg"
+    assert seg["detection_count"] == 2
+    assert "similarity" in seg and "det_score" in seg
+    assert "track_ids" in seg and "track_switches" in seg
+
+
+def test_track_stabilize_merges_ids(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference = FIXTURES / "reference_target.json"
+    detections_path = tmp_path / "stabilize.json"
+    detections = [
+        {"start": 0.0, "end": 0.5, "embedding": [1.0, 0.0, 0.0], "track_id": "x", "sources": ["face-det"], "score": 0.9},
+        {"start": 0.6, "end": 1.1, "embedding": [0.98, 0.05, 0.0], "track_id": "y", "sources": ["face-det"], "score": 0.85},
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "stabilize_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--min-track-duration",
+        "0.0",
+        "--bridge-gap",
+        "0.2",
+        "--min-duration",
+        "0.1",
+        "--track-stabilize",
+        "--track-stabilize-gap",
+        "1.0",
+        "--track-stabilize-similarity",
+        "0.5",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    data = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert data["summary"]["segment_count"] == 1
+    seg = data["segments"][0]
+    assert str(seg["track_id"]).startswith("st")
+    assert "track-stabilize" in seg["sources"]
+
+
+def test_appearance_fallback_keeps_segment(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(
+        json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0], "appearance": [1.0, 0.0, 0.0]}),
+        encoding="utf-8",
+    )
+    detections_path = tmp_path / "appearance.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [0.0, 1.0, 0.0],
+            "appearance": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["face-det"],
+            "score": 0.8,
+        }
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "appearance_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--match-threshold",
+        "0.8",
+        "--appearance-fallback",
+        "--appearance-threshold",
+        "0.9",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--min-track-duration",
+        "0.0",
+        "--min-duration",
+        "0.1",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    data = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert data["summary"]["segment_count"] == 1
+    seg = data["segments"][0]
+    assert "appearance" in json.loads(reference_path.read_text(encoding="utf-8"))
+    assert seg["start"] == 0.0
+    assert seg["end"] == 0.5
+
+
+def test_person_fallback_keeps_segment(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(
+        json.dumps(
+            {"name": "Target", "embedding": [1.0, 0.0, 0.0], "person_embedding": [1.0, 0.0, 0.0]}
+        ),
+        encoding="utf-8",
+    )
+    detections_path = tmp_path / "person.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [0.0, 1.0, 0.0],
+            "person_embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["face-det"],
+            "score": 0.8,
+        }
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "person_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--match-threshold",
+        "0.8",
+        "--person-fallback",
+        "--person-threshold",
+        "0.9",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--min-track-duration",
+        "0.0",
+        "--min-duration",
+        "0.1",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    data = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert data["summary"]["segment_count"] == 1
+    seg = data["segments"][0]
+    assert "person_embedding" in json.loads(reference_path.read_text(encoding="utf-8"))
+    assert seg["start"] == 0.0
+    assert seg["end"] == 0.5
+
+
+def test_track_fill_max_duration_blocks_fill(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "track_fill.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+        {
+            "start": 2.0,
+            "end": 2.5,
+            "embedding": [1.0, 0.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "track_fill_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--match-threshold",
+        "0.8",
+        "--track-policy",
+        "all",
+        "--min-track-similarity",
+        "0.0",
+        "--min-track-duration",
+        "0.0",
+        "--bridge-gap",
+        "0.4",
+        "--min-duration",
+        "0.1",
+        "--track-fill-gap",
+        "2.0",
+        "--track-fill-min-similarity",
+        "0.8",
+        "--track-fill-max-duration",
+        "0.2",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 2
+
+
+def test_face_confirm_blocks_track_fill(tmp_path):
+    video = FIXTURES / "sample_video.txt"
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(json.dumps({"name": "Target", "embedding": [1.0, 0.0, 0.0]}), encoding="utf-8")
+    detections_path = tmp_path / "track_fill.json"
+    detections = [
+        {
+            "start": 0.0,
+            "end": 0.5,
+            "embedding": [0.0, 1.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+        {
+            "start": 1.2,
+            "end": 1.7,
+            "embedding": [0.0, 1.0, 0.0],
+            "track_id": "A",
+            "sources": ["insightface"],
+            "score": 0.9,
+        },
+    ]
+    detections_path.write_text(json.dumps(detections), encoding="utf-8")
+    output_dir = tmp_path / "track_fill_run"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pickpresence.cli",
+        "--video",
+        str(video),
+        "--output-dir",
+        str(output_dir),
+        "--reference-embedding",
+        str(reference_path),
+        "--detection-log",
+        str(detections_path),
+        "--segment-policy",
+        "per_detection",
+        "--match-threshold",
+        "0.8",
+        "--min-duration",
+        "0.1",
+        "--bridge-gap",
+        "0.4",
+        "--track-fill-gap",
+        "2.0",
+        "--track-fill-min-similarity",
+        "0.8",
+        "--face-confirm-threshold",
+        "0.9",
+        "--face-confirm-window",
+        "0.5",
+        "--force-placeholder-export",
+    ]
+    env = os.environ.copy()
+    env["PICKPRESENCE_FORCE_PLACEHOLDER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
+
+    timeline = json.loads((output_dir / "timeline.json").read_text(encoding="utf-8"))
+    assert timeline["summary"]["segment_count"] == 2

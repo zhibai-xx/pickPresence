@@ -78,3 +78,60 @@
 - [x] Docs/.env.example include GPU configuration + acceptance commands (provider probe, CPU vs GPU timing).
 - [x] Tests cover provider selection logic; `./scripts/verify.sh` remains green.
 - [x] GPU vs CPU timing comparison recorded in docs/REPORT.md (≥2x speedup target on 120s chunk).
+
+## M13 – Side-Profile Recall & Quality Policy (planned)
+## M13 – Side-Profile Recall & Quality Policy (current)
+- [x] Added side-profile recall knobs to handle mid/far side faces (including shadowed) without inflating default false positives.
+- [x] Added explicit suppression for “small side-face” cases where target is not visual center (A/B/C).
+- [x] Introduced segment quality tags (scale + lighting + side-profile ratio) in timeline output.
+- [x] Added new policy knobs to separate “enter” vs “keep” for side profiles plus scale-aware gating.
+- [x] Regression tests cover side-profile recall and small-face suppression; `./scripts/verify.sh` remains green.
+- [x] docs/REPORT.md updated with M13 acceptance command and machine-readable summary output.
+
+## M14 – Recall Recovery for Hard Side/Shadow Cases (current)
+### M14.1 – Reference Expansion & Similarity Diagnostics (complete)
+- [x] Add reference-set expansion workflow (side/low-light) with documented inputs/outputs.
+- [x] Add similarity/track stability diagnostics for target gaps (summary JSON + optional images).
+- [x] Provide an end-to-end acceptance command that rebuilds references and outputs diagnostics for S01E09_180.
+- [x] Regression tests validate reference aggregation + diagnostics file schema; `./scripts/verify.sh` remains green.
+- [x] docs/REPORT.md updated with how to run, expected outputs, and known limitations.
+
+### M14.2 – Track Stability Bridge (Non-Face Fallback) (complete)
+- [x] Integrate person-detection + tracking stub (CPU-safe default) to stabilize track IDs in far/side shots.
+- [x] Add a continuity bridge that uses stable person tracks to fill face gaps (configurable, off by default).
+- [x] Provide an acceptance command that outputs timeline + track stats for S01E09_180.
+- [x] Regression tests cover track-stability bridge behavior and toggles; `./scripts/verify.sh` remains green.
+- [x] docs/REPORT.md updated with metrics, validation command, and limitations.
+
+### M14.3 – Optional ReID / Appearance Signal (Pluggable) (current)
+- [x] Add optional appearance-based similarity (ReID or lightweight color/texture embedding) used only when face similarity is unreliable.
+- [x] Gate appearance fallback with thresholds and log its contribution in timeline segments.
+- [x] Provide a reproducible acceptance command demonstrating improved recall in hard segments.
+- [x] Regression tests cover fallback gating and output metadata; `./scripts/verify.sh` remains green.
+- [x] docs/REPORT.md updated with usage, expected gains, and trade-offs.
+
+## M15 – Lightweight Person ReID Fallback (complete)
+- [x] Add person-level embedding (downsampled body ROI) to detections and reference sets.
+- [x] Add `--person-fallback` + `--person-threshold` to accept detections when face similarity is low.
+- [x] Ensure track-fill and trim policies can use person similarity as a fallback gate.
+- [x] Add track-fill caps (`--track-fill-max-duration`, `--track-fill-max-chain`) to prevent runaway merges.
+- [x] Add face-confirm gating (`--face-confirm-threshold`, `--face-confirm-window`) to prevent cross-identity expansion.
+- [x] Add regression tests covering person fallback path; `./scripts/verify.sh` remains green.
+- [x] Update docs/REPORT.md with acceptance commands and expected outputs.
+- [x] Add manual-review comparison script (timeline vs manual timestamps).
+
+## M16 – Identity Consistency Upgrade (planned)
+### M16.1 – Face-confirmed track expansion (complete data-driven spec)
+- [ ] Define a formal “face-confirm anchor” rule for expansion (max gap, min confirmations).
+- [ ] Add acceptance diff report against `docs/acceptance/S01E09_180_timeline_baseline.json`.
+- [ ] Provide command + expected JSON summary in docs/REPORT.md.
+
+### M16.2 – Person-consistency model (ReID/appearance) (planned)
+- [ ] Evaluate a proper ReID embedding model or stronger appearance embedding (documented constraints).
+- [ ] Add optional identity-consistency score to timeline (not used for gating by default).
+- [ ] Regression tests for identity-consistency score schema and toggle behavior.
+
+### M16.3 – Multi-signal identity gating (planned)
+- [ ] Introduce configurable gating rules: face-confirmed OR (identity-consistency over window).
+- [ ] Add guardrails to avoid cross-identity merges (max chain, min face confirmations per segment).
+- [ ] Acceptance runs show improved coverage for 84–94 and 138–143 without introducing wrong-person clips.

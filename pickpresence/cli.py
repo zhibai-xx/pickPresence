@@ -117,6 +117,157 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Hysteresis keep threshold (defaults to 0.5 * start).",
     )
     parser.add_argument(
+        "--side-threshold-start",
+        type=float,
+        help="Lower similarity threshold to enter for mid/far side profiles (disabled if unset).",
+    )
+    parser.add_argument(
+        "--side-threshold-keep",
+        type=float,
+        help="Lower similarity threshold to keep side profiles (defaults to 0.6 * side start).",
+    )
+    parser.add_argument(
+        "--side-scale-min",
+        type=float,
+        default=0.005,
+        help="Minimum bbox area ratio to allow side-profile thresholds (default 0.005).",
+    )
+    parser.add_argument(
+        "--small-face-max-scale",
+        type=float,
+        default=0.003,
+        help="Maximum bbox area ratio treated as small face (default 0.003).",
+    )
+    parser.add_argument(
+        "--medium-face-max-scale",
+        type=float,
+        default=0.01,
+        help="Maximum bbox area ratio treated as medium face (default 0.01).",
+    )
+    parser.add_argument(
+        "--low-light-score",
+        type=float,
+        default=0.5,
+        help="Detector score below which lighting is tagged as low (default 0.5).",
+    )
+    parser.add_argument(
+        "--side-bridge-gap",
+        type=float,
+        default=0.0,
+        help="Extra merge gap (seconds) for side-profile-heavy segments (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--side-profile-ratio-min",
+        type=float,
+        default=0.5,
+        help="Minimum side-profile ratio to qualify for side-bridge merges (default 0.5).",
+    )
+    parser.add_argument(
+        "--side-fill-gap",
+        type=float,
+        default=0.0,
+        help="Larger gap (seconds) allowed for side-profile fills (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--side-fill-ratio-min",
+        type=float,
+        default=0.5,
+        help="Minimum side-profile ratio to qualify for side-fill merges (default 0.5).",
+    )
+    parser.add_argument(
+        "--track-stabilize",
+        action="store_true",
+        help="Stabilize track IDs by similarity + time-gap (default off).",
+    )
+    parser.add_argument(
+        "--track-stabilize-gap",
+        type=float,
+        default=1.5,
+        help="Max gap (seconds) to reuse a stabilized track (default 1.5).",
+    )
+    parser.add_argument(
+        "--track-stabilize-similarity",
+        type=float,
+        default=0.6,
+        help="Similarity threshold to stabilize tracks (default 0.6).",
+    )
+    parser.add_argument(
+        "--appearance-fallback",
+        action="store_true",
+        help="Enable appearance similarity fallback when face similarity is low.",
+    )
+    parser.add_argument(
+        "--appearance-threshold",
+        type=float,
+        default=0.45,
+        help="Appearance similarity threshold to accept a detection (default 0.45).",
+    )
+    parser.add_argument(
+        "--person-fallback",
+        action="store_true",
+        help="Enable person ReID-style similarity fallback when face similarity is low.",
+    )
+    parser.add_argument(
+        "--person-threshold",
+        type=float,
+        default=0.6,
+        help="Person similarity threshold to accept a detection (default 0.6).",
+    )
+    parser.add_argument(
+        "--track-fill-gap",
+        type=float,
+        default=0.0,
+        help="Max gap (seconds) to fill using detections inside gaps (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--track-fill-min-similarity",
+        type=float,
+        default=0.0,
+        help="Minimum similarity to allow track-fill entries (default 0 = no similarity gate).",
+    )
+    parser.add_argument(
+        "--track-fill-max-duration",
+        type=float,
+        default=0.0,
+        help="Maximum duration (seconds) for a single track-fill gap (default 0 = unlimited).",
+    )
+    parser.add_argument(
+        "--track-fill-max-chain",
+        type=int,
+        default=0,
+        help="Maximum number of track-fill merges in a chain (default 0 = unlimited).",
+    )
+    parser.add_argument(
+        "--face-confirm-threshold",
+        type=float,
+        default=0.0,
+        help="Require a face similarity above this threshold within each segment (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--face-confirm-window",
+        type=float,
+        default=0.0,
+        help="Seconds from segment edges for face-confirm gating (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--small-face-ratio-max",
+        type=float,
+        default=0.0,
+        help="Drop segments dominated by small faces when side-profile ratio is below this (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--small-face-max-match",
+        type=float,
+        default=0.0,
+        help="Maximum average match to drop small-face segments (default 0 = disabled).",
+    )
+    parser.add_argument(
+        "--small-face-min-side-ratio",
+        type=float,
+        default=0.0,
+        help="Minimum side-profile ratio to keep small-face segments (default 0 = disabled).",
+    )
+    parser.add_argument(
         "--segment-policy",
         choices=["per_detection", "track_first", "hysteresis"],
         default="per_detection",
@@ -181,6 +332,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Step interval (seconds) for video scanning when --trim-source video.",
     )
     parser.add_argument(
+        "--trim-device",
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="Device for video-based trimming (default cpu).",
+    )
+    parser.add_argument(
         "--min-track-duration",
         type=float,
         default=0.5,
@@ -196,6 +353,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--force-placeholder-export",
         action="store_true",
         help="Skip ffmpeg invocation even if it exists (useful for tests).",
+    )
+    parser.add_argument(
+        "--clean-output",
+        action="store_true",
+        help="Remove existing clip_* and timeline.json in output dir before exporting.",
     )
     parser.add_argument(
         "--chunk-seconds",
@@ -248,6 +410,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         if detection_log is None and args.detector_script:
             detection_log = _run_detector_and_get_path(args, reference_path)
+        track_fill_max_duration = (
+            args.track_fill_max_duration if args.track_fill_max_duration > 0 else None
+        )
+        track_fill_max_chain = args.track_fill_max_chain if args.track_fill_max_chain > 0 else None
         artifacts = run_pipeline(
             video_path=args.video,
             output_dir=args.output_dir,
@@ -264,12 +430,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             match_threshold=args.match_threshold,
             match_threshold_start=args.match_threshold_start,
             match_threshold_keep=args.match_threshold_keep,
+            side_threshold_start=args.side_threshold_start,
+            side_threshold_keep=args.side_threshold_keep,
+            side_scale_min=args.side_scale_min,
+            small_scale_max=args.small_face_max_scale,
+            medium_scale_max=args.medium_face_max_scale,
+            low_light_score=args.low_light_score,
             segment_policy=args.segment_policy,
             track_policy=args.track_policy,
             min_track_duration=args.min_track_duration,
             min_track_similarity=args.min_track_similarity,
             merge_policy=args.merge_policy,
             export_end_eps=args.export_end_eps,
+            clean_output=args.clean_output,
             trim_policy=args.trim_policy,
             trim_source=args.trim_source,
             trim_threshold_start=args.trim_threshold_start,
@@ -278,6 +451,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             trim_pad=args.trim_pad,
             trim_scan_window=args.trim_scan_window,
             trim_scan_step=args.trim_scan_step,
+            trim_device=args.trim_device,
+            side_bridge_gap=args.side_bridge_gap,
+            side_profile_ratio_min=args.side_profile_ratio_min,
+            side_fill_gap=args.side_fill_gap,
+            side_fill_ratio_min=args.side_fill_ratio_min,
+            track_stabilize=args.track_stabilize,
+            track_stabilize_gap=args.track_stabilize_gap,
+            track_stabilize_similarity=args.track_stabilize_similarity,
+            appearance_fallback=args.appearance_fallback,
+            appearance_threshold=args.appearance_threshold,
+            person_fallback=args.person_fallback,
+            person_threshold=args.person_threshold,
+            track_fill_gap=args.track_fill_gap,
+            track_fill_min_similarity=args.track_fill_min_similarity,
+            track_fill_max_duration=track_fill_max_duration,
+            track_fill_max_chain=track_fill_max_chain,
+            face_confirm_threshold=args.face_confirm_threshold,
+            face_confirm_window=args.face_confirm_window,
+            small_face_ratio_max=args.small_face_ratio_max,
+            small_face_max_match=args.small_face_max_match,
+            small_face_min_side_ratio=args.small_face_min_side_ratio,
         )
         print(f"Wrote timeline -> {artifacts.timeline_path}")
         print(f"Generated {len(artifacts.clip_paths)} clip artifact(s).")
@@ -322,6 +516,8 @@ def _combine_reference_embeddings(paths: Sequence[str], name: str | None) -> dic
     ref_name = name
     for path in paths:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if "embedding" not in data:
+            continue
         vectors.append(data["embedding"])
         if not ref_name:
             ref_name = data.get("name")
@@ -338,7 +534,14 @@ def _gather_reference_paths(args: argparse.Namespace) -> list[str]:
     if args.reference_dir:
         ref_dir = Path(args.reference_dir)
         if ref_dir.is_dir():
-            paths.extend(str(path) for path in sorted(ref_dir.glob("*.json")))
+            for path in sorted(ref_dir.glob("*.json")):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if "embedding" not in data:
+                    continue
+                paths.append(str(path))
     if args.reference_list_file:
         list_path = Path(args.reference_list_file)
         if list_path.exists():
@@ -470,6 +673,12 @@ def _run_chunked_pipeline(
                 _write_detections(det_path, detections)
 
             if status == "processed" and detections:
+                track_fill_max_duration = (
+                    args.track_fill_max_duration if args.track_fill_max_duration > 0 else None
+                )
+                track_fill_max_chain = (
+                    args.track_fill_max_chain if args.track_fill_max_chain > 0 else None
+                )
                 artifacts = run_pipeline(
                     video_path=args.video,
                     output_dir=str(chunk_dir),
@@ -486,12 +695,19 @@ def _run_chunked_pipeline(
                     match_threshold=args.match_threshold,
                     match_threshold_start=args.match_threshold_start,
                     match_threshold_keep=args.match_threshold_keep,
+                    side_threshold_start=args.side_threshold_start,
+                    side_threshold_keep=args.side_threshold_keep,
+                    side_scale_min=args.side_scale_min,
+                    small_scale_max=args.small_face_max_scale,
+                    medium_scale_max=args.medium_face_max_scale,
+                    low_light_score=args.low_light_score,
                     segment_policy=args.segment_policy,
                     track_policy=args.track_policy,
                     min_track_duration=args.min_track_duration,
                     min_track_similarity=args.min_track_similarity,
                     merge_policy=args.merge_policy,
                     export_end_eps=args.export_end_eps,
+                    clean_output=args.clean_output,
                     trim_policy=args.trim_policy,
                     trim_source=args.trim_source,
                     trim_threshold_start=args.trim_threshold_start,
@@ -500,6 +716,27 @@ def _run_chunked_pipeline(
                     trim_pad=args.trim_pad,
                     trim_scan_window=args.trim_scan_window,
                     trim_scan_step=args.trim_scan_step,
+                    trim_device=args.trim_device,
+                    side_bridge_gap=args.side_bridge_gap,
+                    side_profile_ratio_min=args.side_profile_ratio_min,
+                    side_fill_gap=args.side_fill_gap,
+                    side_fill_ratio_min=args.side_fill_ratio_min,
+                    track_stabilize=args.track_stabilize,
+                    track_stabilize_gap=args.track_stabilize_gap,
+                    track_stabilize_similarity=args.track_stabilize_similarity,
+                    appearance_fallback=args.appearance_fallback,
+                    appearance_threshold=args.appearance_threshold,
+                    person_fallback=args.person_fallback,
+                    person_threshold=args.person_threshold,
+                    track_fill_gap=args.track_fill_gap,
+                    track_fill_min_similarity=args.track_fill_min_similarity,
+                    track_fill_max_duration=track_fill_max_duration,
+                    track_fill_max_chain=track_fill_max_chain,
+                    face_confirm_threshold=args.face_confirm_threshold,
+                    face_confirm_window=args.face_confirm_window,
+                    small_face_ratio_max=args.small_face_ratio_max,
+                    small_face_max_match=args.small_face_max_match,
+                    small_face_min_side_ratio=args.small_face_min_side_ratio,
                 )
                 chunk_timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
             else:

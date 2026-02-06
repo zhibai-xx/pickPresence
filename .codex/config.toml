@@ -1,0 +1,9 @@
+# Project-level Codex config for pickPresence
+# If gpt-5.2-codex is unavailable in your environment, use the closest Codex model.
+# Suggested fallback: gpt-5.1-codex
+model = "gpt-5.2-codex"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
